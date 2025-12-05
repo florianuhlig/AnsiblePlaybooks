@@ -93,3 +93,6 @@ credentials.yml
 secrets.yml
 *credentials*
 *secrets*
+
+# Claude code details
+.claude/
