@@ -1,0 +1,48 @@
+---
+- name: Update and upgrade Ubuntu systems with nice output
+  hosts: all
+  become: yes
+
+  tasks:
+    - name: Update apt cache
+      ansible.builtin.apt:
+        update_cache: yes
+        cache_valid_time: 3600
+      register: apt_update
+
+    - name: Display update status
+      ansible.builtin.debug:
+        msg: "✓ Package cache updated successfully"
+      when: apt_update is succeeded
+
+    - name: Check for upgradable packages
+      ansible.builtin.shell: apt list --upgradable 2>/dev/null | tail -n +2
+      register: upgradable_packages
+      changed_when: false
+
+    - name: Display upgradable packages
+      ansible.builtin.debug:
+        msg: "{{ upgradable_packages.stdout_lines }}"
+      when: upgradable_packages.stdout_lines | length > 0
+
+    - name: Upgrade all packages
+      ansible.builtin.apt:
+        upgrade: dist
+        force_apt_get: yes
+      register: apt_upgrade
+
+    - name: Display upgrade summary
+      ansible.builtin.debug:
+        msg:
+          - "Packages upgraded: {{ apt_upgrade.changed }}"
+          - "{{ apt_upgrade.stdout_lines | default([]) }}"
+      when: apt_upgrade.stdout_lines is defined
+
+    - name: Remove unused packages
+      ansible.builtin.apt:
+        autoremove: yes
+        autoclean: yes
+
+    - name: Final status
+      ansible.builtin.debug:
+        msg: "✓ System update complete!"
