@@ -19,14 +19,31 @@ This repository contains production-ready Ansible playbooks for system administr
 ├── ansible.cfg              # Ansible configuration
 ├── inventory.ini            # Host inventory
 ├── playbooks/
-│   ├── check-docker-containers.yml   # Docker container monitoring
+│   ├── ping-hosts.yml               # Host connectivity testing
+│   ├── check-docker-containers.yml  # Docker container monitoring
+│   ├── check-open-ports.yml         # Open port scanning
 │   ├── export-packages-inventory.yml # Package inventory export
-│   ├── update-packages.yml           # System package updates
-│   └── delete-test-folder.yml        # Test folder cleanup
+│   ├── update-packages.yml          # System package updates
+│   └── delete-test-folder.yml       # Test folder cleanup
 └── playbooks/output/        # Generated reports (JSON)
 ```
 
 ## Playbooks
+
+### ping-hosts.yml
+
+Tests connectivity to all hosts in the inventory and gathers basic system information.
+
+```bash
+ansible-playbook playbooks/ping-hosts.yml
+```
+
+**Features:**
+- Verifies SSH connectivity to all hosts
+- Gathers minimal host facts
+- Displays hostname, IP, OS version, and kernel information
+
+---
 
 ### check-docker-containers.yml
 
@@ -41,6 +58,24 @@ ansible-playbook playbooks/check-docker-containers.yml
 - Checks for newer image versions
 - Exports detailed JSON reports
 
+---
+
+### check-open-ports.yml
+
+Scans all servers for open TCP and UDP ports and generates detailed reports.
+
+```bash
+ansible-playbook playbooks/check-open-ports.yml
+```
+
+**Features:**
+- Scans TCP and UDP listening ports
+- Identifies processes bound to each port
+- Supports both `ss` and `netstat` (automatic fallback)
+- Exports detailed JSON reports per host
+
+---
+
 ### update-packages.yml
 
 Updates and upgrades system packages on Debian/Ubuntu hosts.
@@ -54,6 +89,8 @@ ansible-playbook playbooks/update-packages.yml
 - Performs dist-upgrade
 - Cleans up unused packages
 
+---
+
 ### export-packages-inventory.yml
 
 Exports a complete inventory of installed packages to JSON format.
@@ -66,6 +103,8 @@ ansible-playbook playbooks/export-packages-inventory.yml
 - Gathers package facts from all hosts
 - Exports to JSON with metadata
 - Includes OS and version information
+
+---
 
 ### delete-test-folder.yml
 
