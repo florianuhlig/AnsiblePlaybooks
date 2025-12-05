@@ -9,5 +9,5 @@
 
     - name: Display connectivity status
       ansible.builtin.debug:
-        msg: "Host {{ inventory_hostname }} is reachable and ready"
+        msg: "Host {{ inventory_hostname }} is reachable"
       when: ping_result is success
