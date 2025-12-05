@@ -1,0 +1,53 @@
+---
+# Playbook: update-packages.yml
+# Description: Updates and upgrades system packages on Ubuntu/Debian hosts
+# Usage: ansible-playbook playbooks/update-packages.yml
+
+- name: Update and upgrade system packages
+  hosts: all
+  become: true
+
+  tasks:
+    - name: Update apt package cache
+      ansible.builtin.apt:
+        update_cache: true
+        cache_valid_time: 3600
+      register: apt_update_result
+
+    - name: Display cache update status
+      ansible.builtin.debug:
+        msg: "Package cache updated successfully"
+      when: apt_update_result is succeeded
+
+    - name: Check for upgradable packages
+      ansible.builtin.command: apt list --upgradable
+      register: upgradable_packages
+      changed_when: false
+      failed_when: false
+
+    - name: Display upgradable packages
+      ansible.builtin.debug:
+        msg: "{{ upgradable_packages.stdout_lines[1:] }}"
+      when: upgradable_packages.stdout_lines | length > 1
+
+    - name: Upgrade all packages to latest version
+      ansible.builtin.apt:
+        upgrade: dist
+        force_apt_get: true
+      register: apt_upgrade_result
+
+    - name: Display upgrade summary
+      ansible.builtin.debug:
+        msg:
+          - "Packages upgraded: {{ apt_upgrade_result.changed }}"
+          - "{{ apt_upgrade_result.stdout_lines | default([]) }}"
+      when: apt_upgrade_result.stdout_lines is defined
+
+    - name: Remove unused packages and clean cache
+      ansible.builtin.apt:
+        autoremove: true
+        autoclean: true
+
+    - name: Display final status
+      ansible.builtin.debug:
+        msg: "System update completed successfully"

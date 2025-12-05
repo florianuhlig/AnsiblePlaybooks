@@ -1,0 +1,98 @@
+# =============================================================================
+# Ansible Project .gitignore
+# =============================================================================
+
+# -----------------------------------------------------------------------------
+# Ansible-specific
+# -----------------------------------------------------------------------------
+
+# Retry files (created on playbook failures)
+*.retry
+
+# Vault password files (security sensitive)
+.vault_pass
+.vault_pass.txt
+vault_password_file
+*vault*.txt
+
+# Temporary files
+*.pyc
+*.pyo
+__pycache__/
+
+# Log files
+*.log
+ansible.log
+
+# -----------------------------------------------------------------------------
+# Output and Generated Files
+# -----------------------------------------------------------------------------
+
+# Keep output directory structure but ignore generated content
+playbooks/output/*.json
+!playbooks/output/.gitkeep
+
+# Fact cache
+.ansible/
+ansible_facts/
+
+# -----------------------------------------------------------------------------
+# Editor and IDE
+# -----------------------------------------------------------------------------
+
+# VS Code
+.vscode/
+
+# JetBrains IDEs
+.idea/
+
+# Vim
+*.swp
+*.swo
+*~
+
+# Emacs
+*#
+.#*
+
+# -----------------------------------------------------------------------------
+# Operating System
+# -----------------------------------------------------------------------------
+
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+
+# Linux
+*.bak
+*.tmp
+
+# Windows
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+
+# -----------------------------------------------------------------------------
+# Environment and Secrets
+# -----------------------------------------------------------------------------
+
+# Environment files
+.env
+.env.*
+*.env
+
+# SSH keys (never commit these)
+*.pem
+*.key
+id_rsa*
+id_ed25519*
+
+# Credentials
+credentials.yml
+secrets.yml
+*credentials*
+*secrets*
+
+# Claude code details
+.claude/
