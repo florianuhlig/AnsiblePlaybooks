@@ -1,20 +1,30 @@
 ---
-- name: Gather installed packages and export to JSON
+# Playbook: export-packages-inventory.yml
+# Description: Gathers installed packages and exports them to JSON format
+# Usage: ansible-playbook playbooks/export-packages-inventory.yml
+
+- name: Export installed packages inventory to JSON
   hosts: all
-  gather_facts: yes
+  gather_facts: true
+
+  vars:
+    output_directory: "{{ playbook_dir }}/output"
+    output_owner: "{{ lookup('env', 'USER') | default('root') }}"
+    output_group: "{{ lookup('env', 'USER') | default('root') }}"
 
   tasks:
-    - name: Gather package facts
+    - name: Gather package facts from host
       ansible.builtin.package_facts:
         manager: auto
-      register: package_facts
+      register: package_facts_result
 
     - name: Create output directory
       ansible.builtin.file:
-        path: "output"
+        path: "{{ output_directory }}"
         state: directory
+        mode: '0755'
       delegate_to: localhost
-      run_once: yes
+      run_once: true
 
     - name: Prepare packages data for JSON export
       ansible.builtin.set_fact:
@@ -30,17 +40,17 @@
     - name: Export packages to JSON file
       ansible.builtin.copy:
         content: "{{ packages_data | to_nice_json }}"
-        dest: "output/packages-{{ inventory_hostname }}.json"
-        owner: "fuhlig"
-        group: "fuhlig"
+        dest: "{{ output_directory }}/packages-{{ inventory_hostname }}.json"
+        owner: "{{ output_owner }}"
+        group: "{{ output_group }}"
         mode: '0644'
       delegate_to: localhost
 
     - name: Display export summary
       ansible.builtin.debug:
         msg:
-          - "✓ Packages exported successfully"
+          - "Packages exported successfully"
           - "Hostname: {{ inventory_hostname }}"
           - "Total packages: {{ ansible_facts.packages | length }}"
           - "OS: {{ ansible_distribution }} {{ ansible_distribution_version }}"
-          - "File: output/packages-{{ inventory_hostname }}.json"
+          - "File: {{ output_directory }}/packages-{{ inventory_hostname }}.json"
