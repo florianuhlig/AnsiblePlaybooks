@@ -1,0 +1,108 @@
+---
+- name: List running Docker containers and check for updates
+  hosts: all
+  gather_facts: yes
+
+  tasks:
+    - name: Get list of all containers
+      ansible.builtin.shell: |
+        docker ps --format "{{.Names}}"
+      register: container_list
+      changed_when: false
+      ignore_errors: yes
+
+    - name: Get detailed container and image information
+      ansible.builtin.shell: |
+        docker ps --format "table {{.Names}}\t{{.Image}}\t{{.Status}}" --no-trunc
+      register: container_details
+      changed_when: false
+      ignore_errors: yes
+
+    - name: Extract image information for update checks
+      ansible.builtin.set_fact:
+        containers_info: []
+
+    - name: Get current image digests for each container
+      ansible.builtin.shell: |
+        docker inspect {{ item }} --format '{{.Image}}'
+      register: image_digests
+      loop: "{{ container_list.stdout_lines }}"
+      when: container_list.stdout_lines | length > 0
+      changed_when: false
+      ignore_errors: yes
+
+    - name: Build containers information list
+      ansible.builtin.set_fact:
+        containers_info: "{{ containers_info + [item] }}"
+      loop: "{{ query('community.general.dict_kv', container_list.stdout_lines | zip(image_digests.results | map(attribute='stdout'))) }}"
+      when: container_list.stdout_lines | length > 0
+
+    - name: Check for image updates (pull without recreating)
+      ansible.builtin.shell: |
+        docker pull $(docker inspect {{ item }} --format '{{.Config.Image}}') 2>&1 | grep -q "Status: Downloaded newer image" && echo "UPDATE_AVAILABLE" || echo "NO_UPDATE"
+      register: update_check
+      loop: "{{ container_list.stdout_lines }}"
+      when: container_list.stdout_lines | length > 0
+      changed_when: false
+      ignore_errors: yes
+
+    - name: Create output directory
+      ansible.builtin.file:
+        path: "{{ playbook_dir }}/output"
+        state: directory
+      delegate_to: localhost
+      run_once: yes
+
+    - name: Prepare containers report data
+      ansible.builtin.set_fact:
+        containers_report:
+          timestamp: "{{ ansible_date_time.iso8601 }}"
+          host: "{{ inventory_hostname }}"
+          os_family: "{{ ansible_os_family }}"
+          docker_version: "{{ docker_version.stdout | default('unknown') }}"
+          total_containers: "{{ container_list.stdout_lines | length }}"
+          containers: "{{ query('community.general.dict_kv', container_list.stdout_lines | zip(update_check.results | map(attribute='stdout'))) }}"
+          raw_output: "{{ container_details.stdout | default('') }}"
+      when: container_list.stdout_lines | length > 0
+
+    - name: Prepare empty report (no containers)
+      ansible.builtin.set_fact:
+        containers_report:
+          timestamp: "{{ ansible_date_time.iso8601 }}"
+          host: "{{ inventory_hostname }}"
+          os_family: "{{ ansible_os_family }}"
+          docker_version: "unknown"
+          total_containers: 0
+          containers: []
+          raw_output: "No containers found"
+      when: container_list.stdout_lines | length == 0
+
+    - name: Export containers report to JSON
+      ansible.builtin.copy:
+        content: "{{ containers_report | to_nice_json }}"
+        dest: "{{ playbook_dir }}/output/containers-{{ inventory_hostname }}.json"
+        owner: "{{ ansible_user_id }}"
+        group: "{{ ansible_user_gid }}"
+        mode: '0644'
+      delegate_to: localhost
+
+    - name: Display containers summary
+      ansible.builtin.debug:
+        msg:
+          - "═══════════════════════════════════════════"
+          - "Docker Containers Report for {{ inventory_hostname }}"
+          - "═══════════════════════════════════════════"
+          - "Total containers: {{ container_list.stdout_lines | length }}"
+          - ""
+          - "{{ container_details.stdout }}"
+          - ""
+          - "Updates available:"
+          - "{{ update_check.results | selectattr('stdout', 'search', 'UPDATE_AVAILABLE') | map(attribute='item') | list | to_nice_json }}"
+          - ""
+          - "Report saved to: output/containers-{{ inventory_hostname }}.json"
+      when: container_list.stdout_lines | length > 0
+
+    - name: Display no containers message
+      ansible.builtin.debug:
+        msg: "No running Docker containers found on {{ inventory_hostname }}"
+      when: container_list.stdout_lines | length == 0
