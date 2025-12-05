@@ -1,0 +1,13 @@
+---
+- name: Test Production Host Availability
+  hosts: production
+  gather_facts: no
+  tasks:
+    - name: Check SSH connectivity and Python availability
+      ansible.builtin.ping:
+      register: ping_result
+
+    - name: Display connectivity status
+      ansible.builtin.debug:
+        msg: "Host {{ inventory_hostname }} is reachable and ready"
+      when: ping_result is success
