@@ -2,7 +2,7 @@
 # Playbook: check-docker-containers.yml
 # Description: Lists Docker containers and checks for available image updates
 # Usage: ansible-playbook playbooks/check-docker-containers.yml
-# Requirements: community.general collection for dict_kv query
+# Requirements: None (uses built-in Jinja2 filters)
 
 - name: Check Docker containers and image updates
   hosts: all
@@ -47,8 +47,7 @@
 
     - name: Build containers information list
       ansible.builtin.set_fact:
-        containers_info: "{{ containers_info + [item] }}"
-      loop: "{{ query('community.general.dict_kv', container_list.stdout_lines | zip(image_digests.results | map(attribute='stdout'))) }}"
+        containers_info: "{{ dict(container_list.stdout_lines | zip(image_digests.results | map(attribute='stdout'))) }}"
       when: container_list.stdout_lines | length > 0
 
     - name: Check for image updates
@@ -79,7 +78,7 @@
           os_family: "{{ ansible_os_family }}"
           docker_version: "{{ docker_version_check.stdout | default('unknown') }}"
           total_containers: "{{ container_list.stdout_lines | length }}"
-          containers: "{{ query('community.general.dict_kv', container_list.stdout_lines | zip(update_check.results | map(attribute='stdout'))) }}"
+          containers: "{{ dict(container_list.stdout_lines | zip(update_check.results | map(attribute='stdout'))) }}"
           raw_output: "{{ container_details.stdout | default('') }}"
       when: container_list.stdout_lines | length > 0
 
