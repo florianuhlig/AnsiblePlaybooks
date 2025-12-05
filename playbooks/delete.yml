@@ -10,7 +10,7 @@
         paths: "{{ target_folder }}"
         file_type: any
         hidden: yes
-        recurse: no
+        recurse: yes
       register: folder_contents
 
     - name: Display items to be deleted
