@@ -96,3 +96,4 @@ secrets.yml
 
 # Claude code details
 .claude/
+CLAUDE.md
