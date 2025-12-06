@@ -65,6 +65,7 @@
       - performance_schema
       - mariadb
       - sys
+      - root
 
     # === Export Options ===
     # Use single transaction for consistent backups (recommended for InnoDB)
