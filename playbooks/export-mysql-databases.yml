@@ -2,7 +2,7 @@
 # Playbook: export-mysql-databases.yml
 # Description: Exports MySQL databases to a backup folder using mysqldump
 # Semaphore Compatible: All options configurable via variables
-# Usage: ansible-playbook playbooks/export-mysql-databases.yml
+# Usage: ansible-playbook playbooks/export-/mysql-databases.yml
 #        ansible-playbook playbooks/export-mysql-databases.yml -e "mysql_user=backup_user mysql_password=secret"
 #        ansible-playbook playbooks/export-mysql-databases.yml -e "databases=['db1','db2']"
 
@@ -15,7 +15,7 @@
   vars:
     # === MySQL Connection Parameters ===
     # MySQL/MariaDB host to connect to
-    mysql_host: "{{ mysql_hostname | default('localhost') }}"
+    mysql_host: "{{ mysql_hostname | default('mysql') }}"
 
     # MySQL port number
     mysql_port: "{{ mysql_port_number | default(3306) }}"
@@ -31,10 +31,13 @@
 
     # === Backup Configuration ===
     # Base directory for all MySQL backups
-    backup_base_directory: "{{ backup_directory | default('/mnt/share/backup/mysql') }}"
+    backup_base_directory: "{{ backup_directory | default('/mnt/backup.fuhlig.de/databases/mysql') }}"
 
     # Timestamp format for backup files
-    backup_timestamp: "{{ custom_timestamp | default(ansible_date_time.iso8601_basic_short) }}"
+    #backup_timestamp: "{{ custom_timestamp | default(ansible_date_time.iso8601_basic_short) }}"
+    # default(now() | strftime('%Y%m%d'))
+    #backup_timestamp: "{{ custom_timestamp | default(ansible_date_time.iso8601_basic_short) }}"
+    backup_timestamp: "{{ (custom_timestamp | default(ansible_date_time.iso8601_basic_short))[:8] }}"
 
     # File permissions for backup directories
     backup_dir_mode: "{{ backup_directory_mode | default('0755') }}"
@@ -152,11 +155,10 @@
         {% if mysql_socket %}-S {{ mysql_socket }}{% else %}-h {{ mysql_host }} -P {{ mysql_port }}{% endif %}
         -u {{ mysql_user }}
         {% if mysql_password %}-p'{{ mysql_password }}'{% endif %}
-        -N -e "SELECT schema_name FROM information_schema.schemata
-        WHERE schema_name NOT IN ({{ all_excluded_databases | map('quote') | join(',') }})"
+        -N -e "SHOW DATABASES WHERE \`Database\` NOT IN ('information_schema','performance_schema','mysql','sys')"
       register: all_databases
       changed_when: false
-      no_log: true
+      no_log: false
       when: databases | length == 0
       ignore_errors: "{{ continue_on_error }}"
 
