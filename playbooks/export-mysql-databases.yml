@@ -134,7 +134,6 @@
       loop:
         - mysql
         - mysqld
-        - mariadb
       when: ansible_service_mgr == "systemd"
 
     - name: Create base backup directory
