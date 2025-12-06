@@ -1,0 +1,321 @@
+---
+# Playbook: export-mysql-databases.yml
+# Description: Exports MySQL databases to a backup folder using mysqldump
+# Semaphore Compatible: All options configurable via variables
+# Usage: ansible-playbook playbooks/export-/mysql-databases.yml
+#        ansible-playbook playbooks/export-mysql-databases.yml -e "mysql_user=backup_user mysql_password=secret"
+#        ansible-playbook playbooks/export-mysql-databases.yml -e "databases=['db1','db2']"
+
+- name: Export MySQL databases to backup folder
+  hosts: "{{ target_hosts | default('all') }}"
+  gather_facts: "{{ gather_facts_enabled | default(true) }}"
+  become: "{{ become_enabled | default(false) }}"
+  become_user: "{{ become_user_name | default('root') }}"
+
+  vars:
+    # === MySQL Connection Parameters ===
+    # MySQL/MariaDB host to connect to
+    mysql_host: "{{ mysql_hostname | default('mysql') }}"
+
+    # MySQL port number
+    mysql_port: "{{ mysql_port_number | default(3306) }}"
+
+    # MySQL username for authentication
+    mysql_user: "{{ mysql_username | default('root') }}"
+
+    # MySQL password (use Semaphore secrets or vault)
+    mysql_password: "{{ mysql_pass | default('') }}"
+
+    # MySQL socket path (optional, leave empty to use TCP)
+    mysql_socket: "{{ mysql_socket_path | default('') }}"
+
+    # === Backup Configuration ===
+    # Base directory for all MySQL backups
+    backup_base_directory: "{{ backup_directory | default('/mnt/backup.fuhlig.de/databases/mysql') }}"
+
+    # Timestamp format for backup files
+    #backup_timestamp: "{{ custom_timestamp | default(ansible_date_time.iso8601_basic_short) }}"
+    # default(now() | strftime('%Y%m%d'))
+    #backup_timestamp: "{{ custom_timestamp | default(ansible_date_time.iso8601_basic_short) }}"
+    backup_timestamp: "{{ (custom_timestamp | default(ansible_date_time.iso8601_basic_short))[:8] }}"
+
+    # File permissions for backup directories
+    backup_dir_mode: "{{ backup_directory_mode | default('0755') }}"
+
+    # File permissions for backup files
+    backup_file_mode: "{{ backup_file_permissions | default('0644') }}"
+
+    # Owner for backup files (optional)
+    backup_owner: "{{ backup_file_owner | default(omit) }}"
+
+    # Group for backup files (optional)
+    backup_group: "{{ backup_file_group | default(omit) }}"
+
+    # === Database Selection ===
+    # List of specific databases to export (empty = all databases)
+    # Example: ['wordpress','nextcloud','ecommerce']
+    databases: "{{ databases_to_backup | default([]) }}"
+
+    # Databases to exclude from backup (system databases always excluded)
+    exclude_databases: "{{ databases_to_exclude | default([]) }}"
+
+    # System databases to always exclude
+    system_databases:
+      - information_schema
+      - performance_schema
+      - mysql
+      - sys
+
+    # === Export Options ===
+    # Use single transaction for consistent backups (recommended for InnoDB)
+    single_transaction: "{{ use_single_transaction | default(true) }}"
+
+    # Include stored procedures and functions
+    routines: "{{ include_routines | default(true) }}"
+
+    # Include triggers
+    triggers: "{{ include_triggers | default(true) }}"
+
+    # Include events
+    events: "{{ include_events | default(true) }}"
+
+    # Lock tables during backup (not recommended with single_transaction)
+    lock_tables: "{{ use_lock_tables | default(false) }}"
+
+    # Add DROP TABLE statements before CREATE TABLE
+    add_drop_table: "{{ include_drop_table | default(true) }}"
+
+    # Add CREATE DATABASE statements
+    add_create_db: "{{ include_create_db | default(true) }}"
+
+    # Disable keys for faster imports
+    disable_keys: "{{ use_disable_keys | default(true) }}"
+
+    # === Compression Options ===
+    # Compress backups with gzip
+    compress_backups: "{{ enable_compression | default(true) }}"
+
+    # Compression level (1-9, 9 = best compression)
+    compression_level: "{{ gzip_compression_level | default(6) }}"
+
+    # === Retention Options ===
+    # Delete old backups (0 = keep all)
+    retention_days: "{{ backup_retention_days | default(0) }}"
+
+    # Keep minimum number of backups regardless of age
+    min_backups_to_keep: "{{ minimum_backups | default(3) }}"
+
+    # === Notification Options ===
+    # Show verbose output
+    verbose_output: "{{ enable_verbose | default(true) }}"
+
+    # Continue on errors instead of failing
+    continue_on_error: "{{ ignore_errors | default(false) }}"
+
+  tasks:
+    - name: Check if MySQL/MariaDB is installed
+      ansible.builtin.command: which mysqldump
+      register: mysqldump_check
+      changed_when: false
+      failed_when: false
+
+    - name: Fail if mysqldump is not available
+      ansible.builtin.fail:
+        msg: "mysqldump is not installed on {{ inventory_hostname }}"
+      when:
+        - mysqldump_check.rc != 0
+        - not continue_on_error
+
+    - name: Check MySQL service status
+      ansible.builtin.systemd:
+        name: "{{ item }}"
+      register: mysql_service_status
+      failed_when: false
+      loop:
+        - mysql
+        - mysqld
+        - mariadb
+      when: ansible_service_mgr == "systemd"
+
+    - name: Create base backup directory
+      ansible.builtin.file:
+        path: "{{ backup_base_directory }}"
+        state: directory
+        mode: "{{ backup_dir_mode }}"
+        owner: "{{ backup_owner }}"
+        group: "{{ backup_group }}"
+
+    - name: Build excluded databases list
+      ansible.builtin.set_fact:
+        all_excluded_databases: "{{ system_databases + exclude_databases }}"
+
+    - name: Get list of all databases (when databases list is empty)
+      ansible.builtin.shell: >
+        mysql
+        {% if mysql_socket %}-S {{ mysql_socket }}{% else %}-h {{ mysql_host }} -P {{ mysql_port }}{% endif %}
+        -u {{ mysql_user }}
+        {% if mysql_password %}-p'{{ mysql_password }}'{% endif %}
+        -N -e "SHOW DATABASES WHERE \`Database\` NOT IN ('information_schema','performance_schema','mysql','sys')"
+      register: all_databases
+      changed_when: false
+      no_log: false
+      when: databases | length == 0
+      ignore_errors: "{{ continue_on_error }}"
+
+    - name: Set databases to export
+      ansible.builtin.set_fact:
+        databases_to_export: "{{ databases if databases | length > 0 else (all_databases.stdout_lines | default([])) }}"
+
+    - name: Display warning if no databases found
+      ansible.builtin.debug:
+        msg: "WARNING: No databases found to export on {{ inventory_hostname }}"
+      when: databases_to_export | length == 0
+
+    - name: Display databases to be exported
+      ansible.builtin.debug:
+        msg:
+          - "Host: {{ inventory_hostname }}"
+          - "Databases to export: {{ databases_to_export | join(', ') if databases_to_export | length > 0 else 'None' }}"
+          - "Backup location: {{ backup_base_directory }}/<databaseName>/"
+      when: verbose_output
+
+    - name: Create directory for each database
+      ansible.builtin.file:
+        path: "{{ backup_base_directory }}/{{ item }}"
+        state: directory
+        mode: "{{ backup_dir_mode }}"
+        owner: "{{ backup_owner }}"
+        group: "{{ backup_group }}"
+      loop: "{{ databases_to_export }}"
+
+    - name: Export each database directly to backup location
+      ansible.builtin.shell: >
+        mysqldump
+        {% if mysql_socket %}-S {{ mysql_socket }}{% else %}-h {{ mysql_host }} -P {{ mysql_port }}{% endif %}
+        -u {{ mysql_user }}
+        {% if mysql_password %}-p'{{ mysql_password }}'{% endif %}
+        {% if single_transaction %}--single-transaction{% endif %}
+        {% if lock_tables %}--lock-tables{% else %}--skip-lock-tables{% endif %}
+        {% if routines %}--routines{% endif %}
+        {% if triggers %}--triggers{% endif %}
+        {% if events %}--events{% endif %}
+        {% if add_drop_table %}--add-drop-table{% endif %}
+        {% if add_create_db %}--databases{% endif %}
+        {% if disable_keys %}--disable-keys{% endif %}
+        --result-file={{ backup_base_directory }}/{{ item }}/{{ item }}_{{ backup_timestamp }}.sql
+        {{ item }}
+      loop: "{{ databases_to_export }}"
+      no_log: true
+      register: export_result
+      changed_when: true
+      ignore_errors: "{{ continue_on_error }}"
+
+    - name: Set file permissions on SQL dumps
+      ansible.builtin.file:
+        path: "{{ backup_base_directory }}/{{ item }}/{{ item }}_{{ backup_timestamp }}.sql"
+        mode: "{{ backup_file_mode }}"
+        owner: "{{ backup_owner }}"
+        group: "{{ backup_group }}"
+      loop: "{{ databases_to_export }}"
+      when: export_result is succeeded
+
+    - name: Compress backups with gzip
+      ansible.builtin.shell: >
+        gzip -f -{{ compression_level }} {{ backup_base_directory }}/{{ item }}/{{ item }}_{{ backup_timestamp }}.sql
+      loop: "{{ databases_to_export }}"
+      when:
+        - compress_backups
+        - export_result is succeeded
+      changed_when: true
+
+    - name: Set file permissions on compressed backups
+      ansible.builtin.file:
+        path: "{{ backup_base_directory }}/{{ item }}/{{ item }}_{{ backup_timestamp }}.sql.gz"
+        mode: "{{ backup_file_mode }}"
+        owner: "{{ backup_owner }}"
+        group: "{{ backup_group }}"
+      loop: "{{ databases_to_export }}"
+      when:
+        - compress_backups
+        - export_result is succeeded
+
+    - name: Find old backups for cleanup (when retention is enabled)
+      ansible.builtin.find:
+        paths: "{{ backup_base_directory }}/{{ item }}"
+        patterns: "{{ item }}_*.sql*"
+        age: "{{ retention_days }}d"
+        age_stamp: mtime
+      loop: "{{ databases_to_export }}"
+      register: old_backups
+      when: retention_days | int > 0
+
+    - name: Count total backups per database
+      ansible.builtin.find:
+        paths: "{{ backup_base_directory }}/{{ item }}"
+        patterns: "{{ item }}_*.sql*"
+      loop: "{{ databases_to_export }}"
+      register: total_backups
+      when: retention_days | int > 0
+
+    - name: Delete old backups (respecting minimum retention)
+      ansible.builtin.file:
+        path: "{{ item.1.path }}"
+        state: absent
+      loop: "{{ old_backups.results | default([]) | subelements('files', skip_missing=True) }}"
+      when:
+        - retention_days | int > 0
+        - total_backups.results | selectattr('item', 'equalto', item.0.item) | map(attribute='matched') | first > min_backups_to_keep
+      loop_control:
+        label: "{{ item.1.path }}"
+
+    - name: Get backup statistics for each database
+      ansible.builtin.find:
+        paths: "{{ backup_base_directory }}/{{ item }}"
+        patterns: "*{{ backup_timestamp }}*"
+      loop: "{{ databases_to_export }}"
+      register: backup_files
+      when: databases_to_export | length > 0
+
+    - name: Get file sizes for new backups
+      ansible.builtin.stat:
+        path: "{{ backup_base_directory }}/{{ item }}/{{ item }}_{{ backup_timestamp }}.sql{% if compress_backups %}.gz{% endif %}"
+      loop: "{{ databases_to_export }}"
+      register: backup_stats
+      when: databases_to_export | length > 0
+
+    - name: Display export summary
+      ansible.builtin.debug:
+        msg:
+          - "=== MySQL Backup Summary ==="
+          - "Host: {{ inventory_hostname }}"
+          - "Databases exported: {{ databases_to_export | length }}"
+          - "Database names: {{ databases_to_export | join(', ') if databases_to_export | length > 0 else 'None' }}"
+          - "Backup location: {{ backup_base_directory }}/"
+          - "Compression: {{ 'enabled (.sql.gz) level ' + (compression_level | string) if compress_backups else 'disabled (.sql)' }}"
+          - "Timestamp: {{ backup_timestamp }}"
+          - "Retention: {{ retention_days + ' days' if retention_days | int > 0 else 'unlimited' }}"
+          - ""
+          - "Backup details:"
+      when:
+        - verbose_output
+        - databases_to_export | length > 0
+
+    - name: Display individual database backup locations
+      ansible.builtin.debug:
+        msg: "  - {{ item.item }}: {{ backup_base_directory }}/{{ item.item }}/{{ item.item }}_{{ backup_timestamp }}.sql{% if compress_backups %}.gz{% endif %} ({{ (item.stat.size / 1024 / 1024) | round(2) }} MB)"
+      loop: "{{ backup_stats.results }}"
+      when:
+        - verbose_output
+        - databases_to_export | length > 0
+        - backup_stats is defined
+        - item.stat is defined
+      loop_control:
+        label: "{{ item.item }}"
+
+    - name: Display errors if any occurred
+      ansible.builtin.debug:
+        msg: "WARNING: Some backups may have failed. Check the log for details."
+      when:
+        - export_result is defined
+        - export_result is failed
+        - continue_on_error

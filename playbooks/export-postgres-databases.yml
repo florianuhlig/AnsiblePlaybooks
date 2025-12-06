@@ -1,0 +1,307 @@
+---
+# Playbook: export-postgresql-databases.yml
+# Description: Exports PostgreSQL databases to a backup folder using pg_dump
+# Semaphore Compatible: All options configurable via variables
+# Usage: ansible-playbook playbooks/export-postgresql-databases.yml
+#        ansible-playbook playbooks/export-postgresql-databases.yml -e "postgres_user=backup_user postgres_password=secret"
+#        ansible-playbook playbooks/export-postgresql-databases.yml -e "databases=['db1','db2']"
+
+
+- name: Export PostgreSQL databases to backup folder
+  hosts: "{{ target_hosts | default('all') }}"
+  gather_facts: "{{ gather_facts_enabled | default(true) }}"
+  become: "{{ become_enabled | default(false) }}"
+  become_user: "{{ become_user_name | default('root') }}"
+
+
+  vars:
+    # === PostgreSQL Connection Parameters ===
+    # PostgreSQL host to connect to
+    postgres_host: "{{ postgres_hostname | default('localhost') }}"
+
+    # PostgreSQL port number
+    postgres_port: "{{ postgres_port_number | default(5432) }}"
+
+    # PostgreSQL username for authentication
+    postgres_user: "{{ postgres_username | default('postgres') }}"
+
+    # PostgreSQL password (use Semaphore secrets or vault)
+    postgres_password: "{{ postgres_pass | default('') }}"
+
+    # PostgreSQL socket path (optional, leave empty to use TCP)
+    postgres_socket: "{{ postgres_socket_path | default('') }}"
+
+    # === Backup Configuration ===
+    # Base directory for all PostgreSQL backups
+    backup_base_directory: "{{ backup_directory | default('/mnt/backup.fuhlig.de/databases/postgresql') }}"
+
+    # Timestamp format for backup files (yyyymmdd)
+    backup_timestamp: "{{ custom_timestamp | default(now(utc=True, fmt='%Y%m%d')) }}"
+
+    # File permissions for backup directories
+    backup_dir_mode: "{{ backup_directory_mode | default('0755') }}"
+
+    # File permissions for backup files
+    backup_file_mode: "{{ backup_file_permissions | default('0644') }}"
+
+    # Owner for backup files (optional)
+    backup_owner: "{{ backup_file_owner | default(omit) }}"
+
+    # Group for backup files (optional)
+    backup_group: "{{ backup_file_group | default(omit) }}"
+
+    # === Database Selection ===
+    # List of specific databases to export (empty = all databases except system)
+    # Example: ['wordpress','nextcloud','ecommerce']
+    databases: "{{ databases_to_backup | default([]) }}"
+
+    # Databases to exclude from backup
+    exclude_databases: "{{ databases_to_exclude | default([]) }}"
+
+    # System databases to always exclude
+    system_databases:
+      - postgres
+      - template0
+      - template1
+
+    # === Export Options ===
+    # Use plain SQL format (true) or custom format (false for better compression)
+    plain_format: "{{ use_plain_format | default(true) }}"
+
+    # Include schema definitions
+    schema_only: "{{ backup_schema_only | default(false) }}"
+
+    # Include data
+    data_only: "{{ backup_data_only | default(false) }}"
+
+    # Use clean format (DROP statements)
+    clean_format: "{{ include_clean | default(true) }}"
+
+    # Include CREATE DATABASE statement
+    create_database: "{{ include_create_db | default(true) }}"
+
+    # === Compression Options ===
+    # Compress backups with gzip
+    compress_backups: "{{ enable_compression | default(true) }}"
+
+    # Compression level (1-9, 9 = best compression)
+    compression_level: "{{ gzip_compression_level | default(6) }}"
+
+    # === Retention Options ===
+    # Delete old backups (0 = keep all)
+    retention_days: "{{ backup_retention_days | default(0) }}"
+
+    # Keep minimum number of backups regardless of age
+    min_backups_to_keep: "{{ minimum_backups | default(3) }}"
+
+    # === Notification Options ===
+    # Show verbose output
+    verbose_output: "{{ enable_verbose | default(true) }}"
+
+    # Continue on errors instead of failing
+    continue_on_error: "{{ ignore_errors | default(false) }}"
+
+  tasks:
+    - name: Check if PostgreSQL client is installed
+      ansible.builtin.command: which pg_dump
+      register: pg_dump_check
+      changed_when: false
+      failed_when: false
+
+    - name: Fail if pg_dump is not available
+      ansible.builtin.fail:
+        msg: "pg_dump is not installed on {{ inventory_hostname }}"
+      when:
+        - pg_dump_check.rc != 0
+        - not continue_on_error
+
+    - name: Check PostgreSQL service status
+      ansible.builtin.systemd:
+        name: "{{ item }}"
+      register: postgresql_service_status
+      failed_when: false
+      loop:
+        - postgresql
+        - postgres
+      when: ansible_service_mgr == "systemd"
+
+    - name: Create base backup directory
+      ansible.builtin.file:
+        path: "{{ backup_base_directory }}"
+        state: directory
+        mode: "{{ backup_dir_mode }}"
+        owner: "{{ backup_owner }}"
+        group: "{{ backup_group }}"
+
+    - name: Build excluded databases list
+      ansible.builtin.set_fact:
+        all_excluded_databases: "{{ system_databases + exclude_databases }}"
+
+    - name: Get list of all user databases (when databases list is empty)
+      ansible.builtin.shell: >
+        PGPASSWORD='{{ postgres_password }}' psql
+        {% if postgres_socket %}-h {{ postgres_socket }}{% else %}-h {{ postgres_host }} -p {{ postgres_port }}{% endif %}
+        -U {{ postgres_user }} -d postgres
+        -t -c "SELECT datname FROM pg_database WHERE datname NOT IN ('template0','template1','postgres') ORDER BY datname;"
+      register: all_databases
+      changed_when: false
+      no_log: false
+      when: databases | length == 0
+      ignore_errors: "{{ continue_on_error }}"
+
+    - name: Set databases to export
+      ansible.builtin.set_fact:
+        databases_to_export: "{{ databases if databases | length > 0 else (all_databases.stdout_lines | default([]) | map('trim') | reject('equalto', '') | list) }}"
+
+    - name: Display warning if no databases found
+      ansible.builtin.debug:
+        msg: "WARNING: No databases found to export on {{ inventory_hostname }}"
+      when: databases_to_export | length == 0
+
+    - name: Display databases to be exported
+      ansible.builtin.debug:
+        msg:
+          - "Host: {{ inventory_hostname }}"
+          - "Databases to export: {{ databases_to_export | join(', ') if databases_to_export | length > 0 else 'None' }}"
+          - "Backup location: {{ backup_base_directory }}/<databaseName>/"
+      when: verbose_output
+
+    - name: Create directory for each database
+      ansible.builtin.file:
+        path: "{{ backup_base_directory }}/{{ item }}"
+        state: directory
+        mode: "{{ backup_dir_mode }}"
+        owner: "{{ backup_owner }}"
+        group: "{{ backup_group }}"
+      loop: "{{ databases_to_export }}"
+
+    - name: Export each PostgreSQL database
+      ansible.builtin.shell: >
+        pg_dump
+        {% if postgres_socket %}-h {{ postgres_socket }}{% else %}-h {{ postgres_host }} -p {{ postgres_port }}{% endif %}
+        -U {{ postgres_user }}
+        {% if plain_format %}--format=plain{% else %}--format=custom{% endif %}
+        {% if clean_format %}--clean{% endif %}
+        {% if create_database %}--create{% endif %}
+        {% if schema_only %}--schema-only{% endif %}
+        {% if data_only %}--data-only{% endif %}
+        --file={{ backup_base_directory }}/{{ item }}/{{ item }}_{{ backup_timestamp }}.sql
+        {{ item }}
+      loop: "{{ databases_to_export }}"
+      environment:
+        PGPASSWORD: "{{ postgres_password }}"
+      no_log: false
+      register: export_result
+      changed_when: true
+      ignore_errors: "{{ continue_on_error }}"
+
+
+    - name: Set file permissions on SQL dumps
+      ansible.builtin.file:
+        path: "{{ backup_base_directory }}/{{ item }}/{{ item }}_{{ backup_timestamp }}.sql"
+        mode: "{{ backup_file_mode }}"
+        owner: "{{ backup_owner }}"
+        group: "{{ backup_group }}"
+      loop: "{{ databases_to_export }}"
+      when: export_result is succeeded
+
+    - name: Compress backups with gzip
+      ansible.builtin.shell: >
+        gzip -f -{{ compression_level }} {{ backup_base_directory }}/{{ item }}/{{ item }}_{{ backup_timestamp }}.sql
+      loop: "{{ databases_to_export }}"
+      when:
+        - compress_backups
+        - export_result is succeeded
+      changed_when: true
+
+    - name: Set file permissions on compressed backups
+      ansible.builtin.file:
+        path: "{{ backup_base_directory }}/{{ item }}/{{ item }}_{{ backup_timestamp }}.sql.gz"
+        mode: "{{ backup_file_mode }}"
+        owner: "{{ backup_owner }}"
+        group: "{{ backup_group }}"
+      loop: "{{ databases_to_export }}"
+      when:
+        - compress_backups
+        - export_result is succeeded
+
+    - name: Find old backups for cleanup (when retention is enabled)
+      ansible.builtin.find:
+        paths: "{{ backup_base_directory }}/{{ item }}"
+        patterns: "{{ item }}_*.sql*"
+        age: "{{ retention_days }}d"
+        age_stamp: mtime
+      loop: "{{ databases_to_export }}"
+      register: old_backups
+      when: retention_days | int > 0
+
+    - name: Count total backups per database
+      ansible.builtin.find:
+        paths: "{{ backup_base_directory }}/{{ item }}"
+        patterns: "{{ item }}_*.sql*"
+      loop: "{{ databases_to_export }}"
+      register: total_backups
+      when: retention_days | int > 0
+
+    - name: Delete old backups (respecting minimum retention)
+      ansible.builtin.file:
+        path: "{{ item.1.path }}"
+        state: absent
+      loop: "{{ old_backups.results | default([]) | subelements('files', skip_missing=True) }}"
+      when:
+        - retention_days | int > 0
+        - total_backups.results | selectattr('item', 'equalto', item.0.item) | map(attribute='matched') | first > min_backups_to_keep
+      loop_control:
+        label: "{{ item.1.path }}"
+
+    - name: Get backup statistics for each database
+      ansible.builtin.find:
+        paths: "{{ backup_base_directory }}/{{ item }}"
+        patterns: "*{{ backup_timestamp }}*"
+      loop: "{{ databases_to_export }}"
+      register: backup_files
+      when: databases_to_export | length > 0
+
+    - name: Get file sizes for new backups
+      ansible.builtin.stat:
+        path: "{{ backup_base_directory }}/{{ item }}/{{ item }}_{{ backup_timestamp }}.sql{% if compress_backups %}.gz{% endif %}"
+      loop: "{{ databases_to_export }}"
+      register: backup_stats
+      when: databases_to_export | length > 0
+
+    - name: Display export summary
+      ansible.builtin.debug:
+        msg:
+          - "=== PostgreSQL Backup Summary ==="
+          - "Host: {{ inventory_hostname }}"
+          - "Databases exported: {{ databases_to_export | length }}"
+          - "Database names: {{ databases_to_export | join(', ') if databases_to_export | length > 0 else 'None' }}"
+          - "Backup location: {{ backup_base_directory }}/"
+          - "Compression: {{ 'enabled (.sql.gz) level ' + (compression_level | string) if compress_backups else 'disabled (.sql)' }}"
+          - "Timestamp: {{ backup_timestamp }}"
+          - "Retention: {{ retention_days + ' days' if retention_days | int > 0 else 'unlimited' }}"
+          - ""
+          - "Backup details:"
+      when:
+        - verbose_output
+        - databases_to_export | length > 0
+
+    - name: Display individual database backup locations
+      ansible.builtin.debug:
+        msg: "  - {{ item.item }}: {{ backup_base_directory }}/{{ item.item }}/{{ item.item }}_{{ backup_timestamp }}.sql{% if compress_backups %}.gz{% endif %} ({{ (item.stat.size / 1024 / 1024) | round(2) }} MB)"
+      loop: "{{ backup_stats.results }}"
+      when:
+        - verbose_output
+        - databases_to_export | length > 0
+        - backup_stats is defined
+        - item.stat is defined
+      loop_control:
+        label: "{{ item.item }}"
+
+    - name: Display errors if any occurred
+      ansible.builtin.debug:
+        msg: "WARNING: Some backups may have failed. Check the log for details."
+      when:
+        - export_result is defined
+        - export_result is failed
+        - continue_on_error
