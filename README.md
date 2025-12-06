@@ -20,8 +20,10 @@ This repository contains production-ready Ansible playbooks for system administr
 ├── inventory.ini            # Host inventory
 ├── playbooks/
 │   ├── ping-hosts.yml               # Host connectivity testing
+│   ├── reboot-hosts.yml             # Server reboot management
 │   ├── check-docker-containers.yml  # Docker container monitoring
 │   ├── check-open-ports.yml         # Open port scanning
+│   ├── export-mysql-databases.yml   # MySQL database backup
 │   ├── export-packages-inventory.yml # Package inventory export
 │   ├── update-packages.yml          # System package updates
 │   └── delete-test-folder.yml       # Test folder cleanup
@@ -42,6 +44,22 @@ ansible-playbook playbooks/ping-hosts.yml
 - Verifies SSH connectivity to all hosts
 - Gathers minimal host facts
 - Displays hostname, IP, OS version, and kernel information
+
+---
+
+### reboot-hosts.yml
+
+Performs controlled server reboots with wait-for-reconnection logic.
+
+```bash
+ansible-playbook playbooks/reboot-hosts.yml
+```
+
+**Features:**
+- Graceful system reboot
+- Automatic reconnection verification
+- Configurable reboot timeout
+- Post-reboot connectivity checks
 
 ---
 
@@ -73,6 +91,41 @@ ansible-playbook playbooks/check-open-ports.yml
 - Identifies processes bound to each port
 - Supports both `ss` and `netstat` (automatic fallback)
 - Exports detailed JSON reports per host
+
+---
+
+### export-mysql-databases.yml
+
+Exports MySQL/MariaDB databases to backup files using mysqldump. **Fully Semaphore-compatible** with extensive variable configuration.
+
+```bash
+# Export all databases
+ansible-playbook playbooks/export-mysql-databases.yml
+
+# Export with authentication
+ansible-playbook playbooks/export-mysql-databases.yml -e "mysql_username=backup mysql_pass=secret"
+
+# Export specific databases
+ansible-playbook playbooks/export-mysql-databases.yml -e "databases_to_backup=['wordpress','nextcloud']"
+
+# With retention policy
+ansible-playbook playbooks/export-mysql-databases.yml -e "backup_retention_days=30 minimum_backups=5"
+```
+
+**Features:**
+- Exports all databases or specific ones
+- Automatic compression with configurable levels
+- Includes routines, triggers, and events
+- Uses single-transaction for consistency
+- Organized backups by database name with timestamps
+- Saves to `/mnt/share/backup/mysql/<databaseName>/`
+- Automatic cleanup with retention policies
+- Fully variable-driven for Semaphore integration
+- Socket or TCP connection support
+- Comprehensive error handling
+
+**Semaphore Setup:**
+See [export-mysql-databases-vars.md](playbooks/export-mysql-databases-vars.md) for complete variable documentation and Semaphore configuration examples.
 
 ---
 
@@ -152,9 +205,13 @@ Hosts are organized in `inventory.ini`:
 
 ## Output
 
-Playbook reports are saved to `playbooks/output/` in JSON format:
+Playbook reports are saved to `playbooks/output/`:
 - `containers-<hostname>.json` - Docker container reports
 - `packages-<hostname>.json` - Package inventory exports
+
+MySQL database backups are saved to `/mnt/share/backup/mysql/<databaseName>/`:
+- Each database gets its own directory
+- Files are timestamped: `<databaseName>_<timestamp>.sql.gz`
 
 ## License
 
