@@ -157,7 +157,7 @@
         {% if mariadb_socket %}-S {{ mariadb_socket }}{% else %}-h {{ mariadb_host }} -P {{ mariadb_port }}{% endif %}
         -u {{ mariadb_user }}
         {% if mariadb_password %}-p'{{ mariadb_password }}'{% endif %}
-        -N -e "SHOW DATABASES WHERE \`Database\` NOT IN ('information_schema','performance_schema','mysql','sys')"
+        -N -e "SHOW DATABASES WHERE \`Database\` NOT IN ('information_schema','performance_schema','mysql','sys', 'root')"
       register: all_databases
       changed_when: false
       no_log: false
