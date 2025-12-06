@@ -98,6 +98,9 @@
     # Compression level (1-9, 9 = best compression)
     compression_level: "{{ gzip_compression_level | default(6) }}"
 
+    # Skip column statistics (required when using MySQL 8.0+ mysqldump with MariaDB)
+    skip_column_statistics: "{{ skip_column_stats | default(true) }}"
+
     # === Retention Options ===
     # Delete old backups (0 = keep all)
     retention_days: "{{ backup_retention_days | default(0) }}"
@@ -308,6 +311,7 @@
         - databases_to_export | length > 0
         - backup_stats is defined
         - item.stat is defined
+        - item.stat.exists | default(false)
       loop_control:
         label: "{{ item.item }}"
 
