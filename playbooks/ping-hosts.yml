@@ -1,0 +1,33 @@
+---
+# Playbook: ping-hosts.yml
+# Description: Tests connectivity to all hosts in the inventory
+# Usage: ansible-playbook playbooks/ping-hosts.yml
+
+- name: Test connectivity to all hosts
+  hosts: all
+  gather_facts: false
+
+  tasks:
+    - name: Ping all hosts
+      ansible.builtin.ping:
+      register: ping_result
+
+    - name: Display ping result
+      ansible.builtin.debug:
+        msg: "Host {{ inventory_hostname }} is reachable"
+      when: ping_result is succeeded
+
+    - name: Gather basic host facts
+      ansible.builtin.setup:
+        gather_subset:
+          - min
+      register: host_facts
+
+    - name: Display host information
+      ansible.builtin.debug:
+        msg:
+          - "Hostname: {{ ansible_hostname }}"
+          - "IP Address: {{ ansible_default_ipv4.address | default('N/A') }}"
+          - "OS: {{ ansible_distribution }} {{ ansible_distribution_version }}"
+          - "Kernel: {{ ansible_kernel }}"
+      when: host_facts is succeeded
