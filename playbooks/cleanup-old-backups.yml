@@ -3,10 +3,10 @@
 # Description: Cleans up old backup files based on retention policies
 # Retention Policy: Keep daily (7 days), weekly (4 weeks), monthly (configurable)
 # Applies to: Database exports (MySQL, MariaDB, PostgreSQL) and Docker volume backups
-# Semaphore Compatible: All options configurable via variables
+# Semaphore Compatible: All options configurable via variables (self-contained, no external files)
 # Usage: ansible-playbook playbooks/cleanup-old-backups.yml
 #        ansible-playbook playbooks/cleanup-old-backups.yml -e "dry_run=true"
-#        ansible-playbook playbooks/cleanup-old-backups.yml -e "monthly_retention=12"
+#        ansible-playbook playbooks/cleanup-old-backups.yml -e "keep_monthly_months=12"
 
 - name: Cleanup old backup files based on retention policy
   hosts: localhost
@@ -18,10 +18,10 @@
     # Keep daily backups for the last N days
     daily_retention_days: "{{ keep_daily_days | default(7) }}"
 
-    # Keep weekly backups for the last N weeks (keeps oldest backup from each week)
+    # Keep weekly backups for the last N weeks
     weekly_retention_weeks: "{{ keep_weekly_weeks | default(4) }}"
 
-    # Keep monthly backups for the last N months (keeps oldest backup from each month)
+    # Keep monthly backups for the last N months
     monthly_retention_months: "{{ keep_monthly_months | default(12) }}"
 
     # Minimum number of backups to always keep regardless of policy
@@ -46,11 +46,6 @@
     # === Output Options ===
     verbose_output: "{{ enable_verbose | default(true) }}"
 
-    # Calculate retention dates
-    daily_cutoff_epoch: "{{ (now(utc=True) | to_datetime('%Y-%m-%d %H:%M:%S.%f%z')).timestamp() | int - (daily_retention_days | int * 86400) }}"
-    weekly_cutoff_epoch: "{{ (now(utc=True) | to_datetime('%Y-%m-%d %H:%M:%S.%f%z')).timestamp() | int - (weekly_retention_weeks | int * 7 * 86400) }}"
-    monthly_cutoff_epoch: "{{ (now(utc=True) | to_datetime('%Y-%m-%d %H:%M:%S.%f%z')).timestamp() | int - (monthly_retention_months | int * 30 * 86400) }}"
-
   tasks:
     # =========================================
     # Initialization
@@ -71,242 +66,222 @@
           - ""
           - "Base backup directory: {{ backup_base_dir }}"
 
+    - name: Initialize counters
+      ansible.builtin.set_fact:
+        cleanup_results: []
+
     # =========================================
     # Collect all backup directories
     # =========================================
-    - name: Initialize backup directories list
-      ansible.builtin.set_fact:
-        all_backup_dirs: []
-        cleanup_summary: []
-
-    - name: Check if MariaDB backup directory exists
+    - name: Check backup directories exist
       ansible.builtin.stat:
-        path: "{{ mariadb_backup_dir }}"
-      register: mariadb_dir_check
+        path: "{{ item }}"
+      register: backup_dirs_check
+      loop:
+        - "{{ mariadb_backup_dir }}"
+        - "{{ mysql_backup_dir }}"
+        - "{{ postgresql_backup_dir }}"
+        - "{{ docker_volumes_backup_dir }}"
 
-    - name: Find MariaDB database directories
+    - name: Find all subdirectories in MariaDB backup
       ansible.builtin.find:
         paths: "{{ mariadb_backup_dir }}"
         file_type: directory
-      register: mariadb_db_dirs
-      when: mariadb_dir_check.stat.exists | default(false)
+      register: mariadb_dirs
+      when: backup_dirs_check.results[0].stat.exists | default(false)
 
-    - name: Add MariaDB directories to list
-      ansible.builtin.set_fact:
-        all_backup_dirs: "{{ all_backup_dirs + [{'path': item.path, 'type': 'MariaDB', 'name': item.path | basename, 'patterns': ['*.sql', '*.sql.gz']}] }}"
-      loop: "{{ mariadb_db_dirs.files | default([]) }}"
-      when: mariadb_dir_check.stat.exists | default(false)
-
-    - name: Check if MySQL backup directory exists
-      ansible.builtin.stat:
-        path: "{{ mysql_backup_dir }}"
-      register: mysql_dir_check
-
-    - name: Find MySQL database directories
+    - name: Find all subdirectories in MySQL backup
       ansible.builtin.find:
         paths: "{{ mysql_backup_dir }}"
         file_type: directory
-      register: mysql_db_dirs
-      when: mysql_dir_check.stat.exists | default(false)
+      register: mysql_dirs
+      when: backup_dirs_check.results[1].stat.exists | default(false)
 
-    - name: Add MySQL directories to list
-      ansible.builtin.set_fact:
-        all_backup_dirs: "{{ all_backup_dirs + [{'path': item.path, 'type': 'MySQL', 'name': item.path | basename, 'patterns': ['*.sql', '*.sql.gz']}] }}"
-      loop: "{{ mysql_db_dirs.files | default([]) }}"
-      when: mysql_dir_check.stat.exists | default(false)
-
-    - name: Check if PostgreSQL backup directory exists
-      ansible.builtin.stat:
-        path: "{{ postgresql_backup_dir }}"
-      register: postgresql_dir_check
-
-    - name: Find PostgreSQL database directories
+    - name: Find all subdirectories in PostgreSQL backup
       ansible.builtin.find:
         paths: "{{ postgresql_backup_dir }}"
         file_type: directory
-      register: postgresql_db_dirs
-      when: postgresql_dir_check.stat.exists | default(false)
+      register: postgresql_dirs
+      when: backup_dirs_check.results[2].stat.exists | default(false)
 
-    - name: Add PostgreSQL directories to list
-      ansible.builtin.set_fact:
-        all_backup_dirs: "{{ all_backup_dirs + [{'path': item.path, 'type': 'PostgreSQL', 'name': item.path | basename, 'patterns': ['*.sql', '*.sql.gz']}] }}"
-      loop: "{{ postgresql_db_dirs.files | default([]) }}"
-      when: postgresql_dir_check.stat.exists | default(false)
-
-    - name: Check if Docker volumes backup directory exists
-      ansible.builtin.stat:
-        path: "{{ docker_volumes_backup_dir }}"
-      register: docker_volumes_dir_check
-
-    - name: Find Docker volume directories
+    - name: Find all subdirectories in Docker volumes backup
       ansible.builtin.find:
         paths: "{{ docker_volumes_backup_dir }}"
         file_type: directory
-      register: docker_volume_dirs
-      when: docker_volumes_dir_check.stat.exists | default(false)
+      register: docker_dirs
+      when: backup_dirs_check.results[3].stat.exists | default(false)
 
-    - name: Add Docker volume directories to list
+    # =========================================
+    # Build list of all directories to process
+    # =========================================
+    - name: Build combined directory list
       ansible.builtin.set_fact:
-        all_backup_dirs: "{{ all_backup_dirs + [{'path': item.path, 'type': 'Docker Volume', 'name': item.path | basename, 'patterns': ['*.tar.gz']}] }}"
-      loop: "{{ docker_volume_dirs.files | default([]) }}"
-      when: docker_volumes_dir_check.stat.exists | default(false)
+        all_backup_directories: >-
+          {{
+            (mariadb_dirs.files | default([]) | map(attribute='path') | map('regex_replace', '^(.*)$', '{"path": "\1", "type": "MariaDB", "pattern": "*.sql*"}') | map('from_json') | list) +
+            (mysql_dirs.files | default([]) | map(attribute='path') | map('regex_replace', '^(.*)$', '{"path": "\1", "type": "MySQL", "pattern": "*.sql*"}') | map('from_json') | list) +
+            (postgresql_dirs.files | default([]) | map(attribute='path') | map('regex_replace', '^(.*)$', '{"path": "\1", "type": "PostgreSQL", "pattern": "*.sql*"}') | map('from_json') | list) +
+            (docker_dirs.files | default([]) | map(attribute='path') | map('regex_replace', '^(.*)$', '{"path": "\1", "type": "Docker Volume", "pattern": "*.tar.gz"}') | map('from_json') | list)
+          }}
 
     - name: Display directories to process
       ansible.builtin.debug:
-        msg: "Found {{ all_backup_dirs | length }} backup directories to process"
+        msg: "Found {{ all_backup_directories | length }} backup directories to process"
 
     # =========================================
-    # Process each backup directory
+    # Process each backup directory with retention script
     # =========================================
-    - name: Process each backup directory
-      block:
-        - name: Find all backup files in directory
-          ansible.builtin.find:
-            paths: "{{ backup_dir.path }}"
-            patterns: "{{ backup_dir.patterns }}"
-            file_type: file
-          register: found_files
+    - name: Apply retention policy to each directory
+      ansible.builtin.shell: |
+        set -e
+        BACKUP_DIR="{{ item.path }}"
+        PATTERN="{{ item.pattern }}"
+        DAILY_DAYS={{ daily_retention_days }}
+        WEEKLY_WEEKS={{ weekly_retention_weeks }}
+        MONTHLY_MONTHS={{ monthly_retention_months }}
+        MIN_KEEP={{ min_backups_to_keep }}
+        DRY_RUN={{ dry_run | bool | lower }}
 
-        - name: Skip if no files found
-          ansible.builtin.debug:
-            msg: "No backup files found in {{ backup_dir.path }}"
-          when: found_files.files | length == 0
+        # Calculate cutoff timestamps
+        NOW=$(date +%s)
+        DAILY_CUTOFF=$((NOW - DAILY_DAYS * 86400))
+        WEEKLY_CUTOFF=$((NOW - WEEKLY_WEEKS * 7 * 86400))
+        MONTHLY_CUTOFF=$((NOW - MONTHLY_MONTHS * 30 * 86400))
 
-        - name: Process files for retention
-          when: found_files.files | length > 0
-          block:
-            - name: Sort files by modification time (newest first)
-              ansible.builtin.set_fact:
-                sorted_files: "{{ found_files.files | sort(attribute='mtime', reverse=true) }}"
+        # Get all backup files sorted by mtime (newest first)
+        FILES=$(find "$BACKUP_DIR" -maxdepth 1 -type f -name "$PATTERN" -printf '%T@ %p\n' 2>/dev/null | sort -rn)
 
-            - name: Determine files to keep based on retention policy
-              ansible.builtin.set_fact:
-                files_to_keep: []
-                seen_weeks: []
-                seen_months: []
+        if [ -z "$FILES" ]; then
+          echo '{"total": 0, "kept": 0, "deleted": 0, "files_kept": [], "files_deleted": []}'
+          exit 0
+        fi
 
-            # Process each file and determine if it should be kept
-            - name: Evaluate each backup file
-              ansible.builtin.set_fact:
-                files_to_keep: >-
-                  {%- set keep_list = files_to_keep | default([]) -%}
-                  {%- set weeks_seen = seen_weeks | default([]) -%}
-                  {%- set months_seen = seen_months | default([]) -%}
-                  {%- set file_mtime = item.mtime -%}
-                  {%- set file_date = '%Y-%m-%d' | strftime(file_mtime) -%}
-                  {%- set file_week = '%Y-W%W' | strftime(file_mtime) -%}
-                  {%- set file_month = '%Y-%m' | strftime(file_mtime) -%}
-                  {%- set keep = false -%}
-                  {%- set reason = '' -%}
-                  {# Keep if within daily retention period #}
-                  {%- if file_mtime >= (daily_cutoff_epoch | float) -%}
-                    {%- set keep = true -%}
-                    {%- set reason = 'daily' -%}
-                  {# Keep if weekly retention and first from this week #}
-                  {%- elif file_mtime >= (weekly_cutoff_epoch | float) and file_week not in weeks_seen -%}
-                    {%- set keep = true -%}
-                    {%- set reason = 'weekly' -%}
-                    {%- set weeks_seen = weeks_seen + [file_week] -%}
-                  {# Keep if monthly retention and first from this month #}
-                  {%- elif file_mtime >= (monthly_cutoff_epoch | float) and file_month not in months_seen -%}
-                    {%- set keep = true -%}
-                    {%- set reason = 'monthly' -%}
-                    {%- set months_seen = months_seen + [file_month] -%}
-                  {%- endif -%}
-                  {%- if keep -%}
-                    {{ keep_list + [{'path': item.path, 'mtime': file_mtime, 'reason': reason}] }}
-                  {%- else -%}
-                    {{ keep_list }}
-                  {%- endif -%}
-                seen_weeks: >-
-                  {%- set weeks_seen = seen_weeks | default([]) -%}
-                  {%- set file_mtime = item.mtime -%}
-                  {%- set file_week = '%Y-W%W' | strftime(file_mtime) -%}
-                  {%- if file_mtime >= (weekly_cutoff_epoch | float) and file_week not in weeks_seen -%}
-                    {{ weeks_seen + [file_week] }}
-                  {%- else -%}
-                    {{ weeks_seen }}
-                  {%- endif -%}
-                seen_months: >-
-                  {%- set months_seen = seen_months | default([]) -%}
-                  {%- set file_mtime = item.mtime -%}
-                  {%- set file_month = '%Y-%m' | strftime(file_mtime) -%}
-                  {%- if file_mtime >= (monthly_cutoff_epoch | float) and file_month not in months_seen -%}
-                    {{ months_seen + [file_month] }}
-                  {%- else -%}
-                    {{ months_seen }}
-                  {%- endif -%}
-              loop: "{{ sorted_files }}"
-              loop_control:
-                label: "{{ item.path | basename }}"
+        TOTAL=0
+        KEPT=0
+        DELETED=0
+        KEPT_FILES=""
+        DELETED_FILES=""
+        SEEN_WEEKS=""
+        SEEN_MONTHS=""
 
-            # Ensure minimum backups are kept
-            - name: Ensure minimum backups are kept
-              ansible.builtin.set_fact:
-                files_to_keep: "{{ (files_to_keep + sorted_files[:min_backups_to_keep | int] | map(attribute='path') | map('regex_replace', '^(.*)$', '{\"path\": \"\\1\", \"reason\": \"minimum\"}') | map('from_json') | list) | unique(attribute='path') }}"
-              when: files_to_keep | length < (min_backups_to_keep | int)
+        # Process each file
+        while IFS= read -r line; do
+          [ -z "$line" ] && continue
+          MTIME=$(echo "$line" | cut -d' ' -f1 | cut -d'.' -f1)
+          FILEPATH=$(echo "$line" | cut -d' ' -f2-)
+          FILENAME=$(basename "$FILEPATH")
+          TOTAL=$((TOTAL + 1))
 
-            - name: Determine files to delete
-              ansible.builtin.set_fact:
-                files_to_delete: "{{ sorted_files | map(attribute='path') | list | difference(files_to_keep | map(attribute='path') | list) }}"
+          KEEP=false
+          REASON=""
 
-            - name: Display retention decision for directory
-              ansible.builtin.debug:
-                msg:
-                  - "{{ backup_dir.type }}: {{ backup_dir.name }}"
-                  - "  Total files: {{ sorted_files | length }}"
-                  - "  Files to keep: {{ files_to_keep | length }}"
-                  - "  Files to delete: {{ files_to_delete | length }}"
-              when: verbose_output
+          # Check daily retention
+          if [ "$MTIME" -ge "$DAILY_CUTOFF" ]; then
+            KEEP=true
+            REASON="daily"
+          else
+            # Check weekly retention
+            FILE_WEEK=$(date -d "@$MTIME" +%Y-W%W 2>/dev/null || date -r "$MTIME" +%Y-W%W 2>/dev/null)
+            if [ "$MTIME" -ge "$WEEKLY_CUTOFF" ]; then
+              if ! echo "$SEEN_WEEKS" | grep -q "$FILE_WEEK"; then
+                KEEP=true
+                REASON="weekly"
+                SEEN_WEEKS="$SEEN_WEEKS $FILE_WEEK"
+              fi
+            fi
 
-            - name: Display files to keep (verbose)
-              ansible.builtin.debug:
-                msg: "  KEEP: {{ item.path | basename }} ({{ item.reason }})"
-              loop: "{{ files_to_keep }}"
-              loop_control:
-                label: "{{ item.path | basename }}"
-              when:
-                - verbose_output
-                - files_to_keep | length > 0
+            # Check monthly retention
+            if [ "$KEEP" = "false" ]; then
+              FILE_MONTH=$(date -d "@$MTIME" +%Y-%m 2>/dev/null || date -r "$MTIME" +%Y-%m 2>/dev/null)
+              if [ "$MTIME" -ge "$MONTHLY_CUTOFF" ]; then
+                if ! echo "$SEEN_MONTHS" | grep -q "$FILE_MONTH"; then
+                  KEEP=true
+                  REASON="monthly"
+                  SEEN_MONTHS="$SEEN_MONTHS $FILE_MONTH"
+                fi
+              fi
+            fi
+          fi
 
-            - name: Display files to delete (verbose)
-              ansible.builtin.debug:
-                msg: "  DELETE: {{ item | basename }}"
-              loop: "{{ files_to_delete }}"
-              loop_control:
-                label: "{{ item | basename }}"
-              when:
-                - verbose_output
-                - files_to_delete | length > 0
+          # Ensure minimum backups
+          if [ "$KEEP" = "false" ] && [ "$KEPT" -lt "$MIN_KEEP" ]; then
+            KEEP=true
+            REASON="minimum"
+          fi
 
-            - name: Delete old backup files
-              ansible.builtin.file:
-                path: "{{ item }}"
-                state: absent
-              loop: "{{ files_to_delete }}"
-              loop_control:
-                label: "{{ item | basename }}"
-              when:
-                - not (dry_run | bool)
-                - files_to_delete | length > 0
+          if [ "$KEEP" = "true" ]; then
+            KEPT=$((KEPT + 1))
+            KEPT_FILES="$KEPT_FILES\"$FILENAME ($REASON)\","
+          else
+            DELETED=$((DELETED + 1))
+            DELETED_FILES="$DELETED_FILES\"$FILENAME\","
+            if [ "$DRY_RUN" = "false" ]; then
+              rm -f "$FILEPATH"
+            fi
+          fi
+        done <<< "$FILES"
 
-            - name: Add to cleanup summary
-              ansible.builtin.set_fact:
-                cleanup_summary: "{{ cleanup_summary + [{'type': backup_dir.type, 'name': backup_dir.name, 'total': sorted_files | length, 'kept': files_to_keep | length, 'deleted': files_to_delete | length}] }}"
+        # Remove trailing commas
+        KEPT_FILES=$(echo "$KEPT_FILES" | sed 's/,$//')
+        DELETED_FILES=$(echo "$DELETED_FILES" | sed 's/,$//')
 
-      loop: "{{ all_backup_dirs }}"
+        echo "{\"total\": $TOTAL, \"kept\": $KEPT, \"deleted\": $DELETED, \"files_kept\": [$KEPT_FILES], \"files_deleted\": [$DELETED_FILES]}"
+      args:
+        executable: /bin/bash
+      register: retention_results
+      loop: "{{ all_backup_directories }}"
       loop_control:
-        loop_var: backup_dir
-        label: "{{ backup_dir.type }}: {{ backup_dir.name }}"
+        label: "{{ item.type }}: {{ item.path | basename }}"
+      changed_when: false
+
+    # =========================================
+    # Display Results
+    # =========================================
+    - name: Parse and display results for each directory
+      ansible.builtin.debug:
+        msg:
+          - "{{ item.item.type }}: {{ item.item.path | basename }}"
+          - "  Total: {{ (item.stdout | from_json).total }}"
+          - "  Kept: {{ (item.stdout | from_json).kept }}"
+          - "  {{ 'Would delete' if dry_run | bool else 'Deleted' }}: {{ (item.stdout | from_json).deleted }}"
+      loop: "{{ retention_results.results }}"
+      loop_control:
+        label: "{{ item.item.type }}: {{ item.item.path | basename }}"
+      when:
+        - verbose_output
+        - item.stdout is defined
+        - (item.stdout | from_json).total > 0
+
+    - name: Show files to keep (verbose)
+      ansible.builtin.debug:
+        msg: "  KEEP: {{ (item.stdout | from_json).files_kept | join(', ') }}"
+      loop: "{{ retention_results.results }}"
+      loop_control:
+        label: "{{ item.item.path | basename }}"
+      when:
+        - verbose_output
+        - item.stdout is defined
+        - (item.stdout | from_json).files_kept | length > 0
+
+    - name: Show files to delete (verbose)
+      ansible.builtin.debug:
+        msg: "  {{ 'WOULD DELETE' if dry_run | bool else 'DELETED' }}: {{ (item.stdout | from_json).files_deleted | join(', ') }}"
+      loop: "{{ retention_results.results }}"
+      loop_control:
+        label: "{{ item.item.path | basename }}"
+      when:
+        - verbose_output
+        - item.stdout is defined
+        - (item.stdout | from_json).files_deleted | length > 0
 
     # =========================================
     # Summary
     # =========================================
     - name: Calculate totals
       ansible.builtin.set_fact:
-        total_files: "{{ cleanup_summary | map(attribute='total') | sum }}"
-        total_kept: "{{ cleanup_summary | map(attribute='kept') | sum }}"
-        total_deleted: "{{ cleanup_summary | map(attribute='deleted') | sum }}"
+        total_files: "{{ retention_results.results | map(attribute='stdout') | map('from_json') | map(attribute='total') | sum }}"
+        total_kept: "{{ retention_results.results | map(attribute='stdout') | map('from_json') | map(attribute='kept') | sum }}"
+        total_deleted: "{{ retention_results.results | map(attribute='stdout') | map('from_json') | map(attribute='deleted') | sum }}"
 
     - name: Display cleanup summary
       ansible.builtin.debug:
@@ -316,13 +291,13 @@
           - "==========================================="
           - "Mode: {{ 'DRY RUN (no files were deleted)' if dry_run | bool else 'LIVE' }}"
           - ""
-          - "Directories processed: {{ cleanup_summary | length }}"
+          - "Directories processed: {{ all_backup_directories | length }}"
           - "Total backup files: {{ total_files }}"
           - "Files kept: {{ total_kept }}"
           - "Files {{ 'that would be deleted' if dry_run | bool else 'deleted' }}: {{ total_deleted }}"
           - ""
           - "Breakdown by type:"
-          - "  - MariaDB: {{ cleanup_summary | selectattr('type', 'equalto', 'MariaDB') | list | length }} databases"
-          - "  - MySQL: {{ cleanup_summary | selectattr('type', 'equalto', 'MySQL') | list | length }} databases"
-          - "  - PostgreSQL: {{ cleanup_summary | selectattr('type', 'equalto', 'PostgreSQL') | list | length }} databases"
-          - "  - Docker Volumes: {{ cleanup_summary | selectattr('type', 'equalto', 'Docker Volume') | list | length }} volumes"
+          - "  - MariaDB: {{ mariadb_dirs.files | default([]) | length }} databases"
+          - "  - MySQL: {{ mysql_dirs.files | default([]) | length }} databases"
+          - "  - PostgreSQL: {{ postgresql_dirs.files | default([]) | length }} databases"
+          - "  - Docker Volumes: {{ docker_dirs.files | default([]) | length }} volumes"
