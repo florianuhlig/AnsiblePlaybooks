@@ -50,55 +50,34 @@
           - ""
           - "Volumes: {{ volumes_to_backup | join(', ') }}"
 
-    - name: Create backup directory
+    - name: Create backup directories for each volume
       ansible.builtin.file:
-        path: "{{ backup_base_dir }}/{{ timestamp }}"
+        path: "{{ backup_base_dir }}/{{ item }}"
         state: directory
         mode: '0755'
-      become: true
-
-    - name: Get volume mount points
-      ansible.builtin.command: docker volume inspect {{ item }} --format "{% raw %}{{.Mountpoint}}{% endraw %}"
-      register: volume_mountpoints
       loop: "{{ volumes_to_backup }}"
-      changed_when: false
+      become: true
 
     - name: Backup each volume using tar
       ansible.builtin.shell: |
         set -e
         docker run --rm \
-          -v {{ item.item }}:/source:ro \
-          -v {{ backup_base_dir }}/{{ timestamp }}:/backup \
+          -v {{ item }}:/source:ro \
+          -v {{ backup_base_dir }}/{{ item }}:/backup \
           alpine:latest \
-          tar czf /backup/{{ item.item }}.tar.gz -C /source .
+          tar czf /backup/{{ item }}-{{ timestamp }}.tar.gz -C /source .
       args:
         executable: /bin/bash
-      loop: "{{ volume_mountpoints.results }}"
-      loop_control:
-        label: "{{ item.item }}"
+      loop: "{{ volumes_to_backup }}"
       register: backup_results
       become: true
 
     - name: Get backup file sizes
       ansible.builtin.find:
-        paths: "{{ backup_base_dir }}/{{ timestamp }}"
-        patterns: "*.tar.gz"
+        paths: "{{ backup_base_dir }}"
+        patterns: "*-{{ timestamp }}.tar.gz"
+        recurse: true
       register: backup_files
-      become: true
-
-    - name: Create backup manifest
-      ansible.builtin.copy:
-        content: |
-          {
-            "timestamp": "{{ ansible_date_time.iso8601 }}",
-            "host": "{{ inventory_hostname }}",
-            "backup_directory": "{{ backup_base_dir }}/{{ timestamp }}",
-            "volumes_backed_up": {{ volumes_to_backup | to_nice_json }},
-            "excluded_volumes": {{ volumes_to_exclude | to_nice_json }},
-            "files": {{ backup_files.files | map(attribute='path') | list | to_nice_json }}
-          }
-        dest: "{{ backup_base_dir }}/{{ timestamp }}/manifest.json"
-        mode: '0644'
       become: true
 
     - name: Calculate total backup size
@@ -111,7 +90,7 @@
           - "==========================================="
           - "Backup Complete: {{ inventory_hostname }}"
           - "==========================================="
-          - "Backup location: {{ backup_base_dir }}/{{ timestamp }}"
+          - "Backup location: {{ backup_base_dir }}/<volume_name>/"
           - "Volumes backed up: {{ volumes_to_backup | length }}"
           - "Total backup size: {{ (total_backup_size | int / 1024 / 1024) | round(2) }} MB"
           - ""
