@@ -29,6 +29,7 @@ This repository contains production-ready Ansible playbooks for system administr
 │   ├── export-packages-inventory.yml # Package inventory export
 │   ├── update-packages.yml          # System package updates
 │   ├── backup-docker-volumes.yml    # Docker volume backups
+│   ├── cleanup-old-backups.yml      # Backup retention cleanup
 │   └── delete-test-folder.yml       # Test folder cleanup
 └── playbooks/output/        # Generated reports (JSON)
 ```
@@ -221,6 +222,52 @@ ansible-playbook playbooks/backup-docker-volumes.yml -e "exclude_volumes=['cache
 │   └── myvolume2-2025-12-06_0451.tar.gz
 └── ...
 ```
+
+---
+
+### cleanup-old-backups.yml
+
+Cleans up old backup files based on a grandfather-father-son retention policy. **Fully Semaphore-compatible** with all options configurable via variables.
+
+```bash
+# Preview what would be deleted (dry run)
+ansible-playbook playbooks/cleanup-old-backups.yml -e "dry_run=true"
+
+# Run with default retention (7 daily, 4 weekly, 12 monthly)
+ansible-playbook playbooks/cleanup-old-backups.yml
+
+# Custom retention policy
+ansible-playbook playbooks/cleanup-old-backups.yml -e "keep_daily_days=14 keep_weekly_weeks=8 keep_monthly_months=24"
+
+# Different backup directory
+ansible-playbook playbooks/cleanup-old-backups.yml -e "backup_directory=/custom/backup/path"
+```
+
+**Features:**
+- Grandfather-Father-Son retention policy:
+  - **Daily:** Keep all backups from the last 7 days (configurable)
+  - **Weekly:** Keep one backup per week for the last 4 weeks (configurable)
+  - **Monthly:** Keep one backup per month for the last 12 months (configurable)
+- Applies to all backup types:
+  - MariaDB database exports
+  - MySQL database exports
+  - PostgreSQL database exports
+  - Docker volume backups
+- Dry run mode to preview deletions without removing files
+- Minimum backup guarantee (always keeps at least 1 backup per item)
+- Detailed summary of files kept and deleted
+- Runs locally on the Ansible controller
+
+**Semaphore Variables:**
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `keep_daily_days` | 7 | Days to keep daily backups |
+| `keep_weekly_weeks` | 4 | Weeks to keep weekly backups |
+| `keep_monthly_months` | 12 | Months to keep monthly backups |
+| `minimum_backups` | 1 | Minimum backups to always keep |
+| `dry_run_mode` | false | Preview mode (no deletions) |
+| `backup_directory` | /mnt/backup.fuhlig.de | Base backup directory |
+| `enable_verbose` | true | Show detailed output |
 
 ---
 
