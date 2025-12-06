@@ -10,8 +10,8 @@
   gather_facts: true
 
   vars:
-    backup_base_dir: "{{ backup_dir | default('/var/backups/docker-volumes') }}"
-    exclude_volumes: "{{ exclude_volumes | default([]) }}"
+    backup_base_dir: "{{ backup_dir | default('/mnt/backup.fuhlig.de/docker_volumes') }}"
+    volumes_to_exclude: "{{ exclude_volumes | default([]) }}"
     timestamp: "{{ ansible_date_time.date }}_{{ ansible_date_time.hour }}{{ ansible_date_time.minute }}"
 
   tasks:
@@ -36,7 +36,7 @@
 
     - name: Filter out excluded volumes
       ansible.builtin.set_fact:
-        volumes_to_backup: "{{ volume_list.stdout_lines | difference(exclude_volumes) }}"
+        volumes_to_backup: "{{ volume_list.stdout_lines | difference(volumes_to_exclude) }}"
 
     - name: Display volumes to backup
       ansible.builtin.debug:
@@ -46,7 +46,7 @@
           - "==========================================="
           - "Total volumes found: {{ volume_list.stdout_lines | length }}"
           - "Volumes to backup: {{ volumes_to_backup | length }}"
-          - "Excluded volumes: {{ exclude_volumes | length }}"
+          - "Excluded volumes: {{ volumes_to_exclude | length }}"
           - ""
           - "Volumes: {{ volumes_to_backup | join(', ') }}"
 
@@ -94,7 +94,7 @@
             "host": "{{ inventory_hostname }}",
             "backup_directory": "{{ backup_base_dir }}/{{ timestamp }}",
             "volumes_backed_up": {{ volumes_to_backup | to_nice_json }},
-            "excluded_volumes": {{ exclude_volumes | to_nice_json }},
+            "excluded_volumes": {{ volumes_to_exclude | to_nice_json }},
             "files": {{ backup_files.files | map(attribute='path') | list | to_nice_json }}
           }
         dest: "{{ backup_base_dir }}/{{ timestamp }}/manifest.json"
