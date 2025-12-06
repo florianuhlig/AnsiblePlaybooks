@@ -28,6 +28,7 @@ This repository contains production-ready Ansible playbooks for system administr
 │   ├── export-postgres-databases.yml # PostgreSQL database backup
 │   ├── export-packages-inventory.yml # Package inventory export
 │   ├── update-packages.yml          # System package updates
+│   ├── backup-docker-volumes.yml    # Docker volume backups
 │   └── delete-test-folder.yml       # Test folder cleanup
 └── playbooks/output/        # Generated reports (JSON)
 ```
@@ -187,6 +188,42 @@ ansible-playbook playbooks/export-postgres-databases.yml -e "backup_retention_da
 
 ---
 
+### backup-docker-volumes.yml
+
+Backs up all Docker volumes to compressed tar archives.
+
+```bash
+# Backup all volumes
+ansible-playbook playbooks/backup-docker-volumes.yml
+
+# Custom backup directory
+ansible-playbook playbooks/backup-docker-volumes.yml -e "backup_dir=/custom/path"
+
+# Exclude specific volumes
+ansible-playbook playbooks/backup-docker-volumes.yml -e "exclude_volumes=['cache_vol','temp_data']"
+```
+
+**Features:**
+- Backs up all Docker volumes to compressed `.tar.gz` archives
+- Each volume gets its own folder with timestamped backups
+- Uses Alpine container for portable, permission-safe backups
+- Supports excluding specific volumes
+- Skips hosts without Docker installed
+- Saves to `/mnt/backup.fuhlig.de/docker_volumes/<volume_name>/`
+
+**Backup Structure:**
+```
+/mnt/backup.fuhlig.de/docker_volumes/
+├── myvolume1/
+│   ├── myvolume1-2025-12-06_0451.tar.gz
+│   └── myvolume1-2025-12-07_0300.tar.gz
+├── myvolume2/
+│   └── myvolume2-2025-12-06_0451.tar.gz
+└── ...
+```
+
+---
+
 ### update-packages.yml
 
 Updates and upgrades system packages on Debian/Ubuntu hosts.
@@ -272,7 +309,10 @@ Database backups are saved to:
 - **MariaDB:** `/mnt/backup.fuhlig.de/databases/mariadb/<databaseName>/`
 - **PostgreSQL:** `/mnt/backup.fuhlig.de/databases/postgresql/<databaseName>/`
 
-Files are timestamped: `<databaseName>_<timestamp>.sql.gz`
+Docker volume backups are saved to:
+- **Docker Volumes:** `/mnt/backup.fuhlig.de/docker_volumes/<volumeName>/`
+
+Files are timestamped: `<name>-<timestamp>.tar.gz` or `<name>_<timestamp>.sql.gz`
 
 ## License
 
