@@ -12,7 +12,7 @@
   vars:
     backup_base_dir: "{{ backup_dir | default('/mnt/backup.fuhlig.de/docker_volumes') }}"
     volumes_to_exclude: "{{ exclude_volumes | default([]) }}"
-    timestamp: "{{ ansible_date_time.date }}_{{ ansible_date_time.hour }}{{ ansible_date_time.minute }}"
+    timestamp: "{{ ansible_date_time.date }}"
 
   tasks:
     - name: Check if Docker is installed
@@ -65,34 +65,34 @@
           -v {{ item }}:/source:ro \
           -v {{ backup_base_dir }}/{{ item }}:/backup \
           alpine:latest \
-          tar czf /backup/{{ item }}.tar.gz -C /source .
+          tar czf /backup/{{ item }}_{{ timestamp }}.tar.gz -C /source .
       args:
         executable: /bin/bash
       loop: "{{ volumes_to_backup }}"
       register: backup_results
       become: true
 
-    #- name: Get backup file sizes
-    #  ansible.builtin.find:
-    #    paths: "{{ backup_base_dir }}"
-    #    patterns: "*-{{ timestamp }}.tar.gz"
-    #    recurse: true
-    #  register: backup_files
-    #  become: true
+    - name: Get backup file sizes
+      ansible.builtin.find:
+        paths: "{{ backup_base_dir }}"
+        patterns: "*-{{ timestamp }}.tar.gz"
+        recurse: true
+      register: backup_files
+      become: true
 
-    #- name: Calculate total backup size
-    #  ansible.builtin.set_fact:
-    #    total_backup_size: "{{ backup_files.files | map(attribute='size') | sum }}"
+    - name: Calculate total backup size
+      ansible.builtin.set_fact:
+        total_backup_size: "{{ backup_files.files | map(attribute='size') | sum }}"
 
-    #- name: Display backup summary
-    #  ansible.builtin.debug:
-    #    msg:
-    #      - "==========================================="
-    #      - "Backup Complete: {{ inventory_hostname }}"
-     #     - "==========================================="
-    #      - "Backup location: {{ backup_base_dir }}/<volume_name>/"
-    #      - "Volumes backed up: {{ volumes_to_backup | length }}"
-    #      - "Total backup size: {{ (total_backup_size | int / 1024 / 1024) | round(2) }} MB"
-    #      - ""
-    #      - "Backup files:"
-    #      - "{{ backup_files.files | map(attribute='path') | list | to_nice_yaml }}"
+    - name: Display backup summary
+      ansible.builtin.debug:
+        msg:
+          - "==========================================="
+          - "Backup Complete: {{ inventory_hostname }}"
+          - "==========================================="
+          - "Backup location: {{ backup_base_dir }}/<volume_name>/"
+          - "Volumes backed up: {{ volumes_to_backup | length }}"
+          - "Total backup size: {{ (total_backup_size | int / 1024 / 1024) | round(2) }} MB"
+          - ""
+          - "Backup files:"
+          - "{{ backup_files.files | map(attribute='path') | list | to_nice_yaml }}"
