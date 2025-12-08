@@ -75,7 +75,7 @@
     - name: Get backup file sizes
       ansible.builtin.find:
         paths: "{{ backup_base_dir }}"
-        patterns: "*-{{ timestamp }}.tar.gz"
+        patterns: "*_{{ timestamp }}.tar.gz"
         recurse: true
       register: backup_files
       become: true
