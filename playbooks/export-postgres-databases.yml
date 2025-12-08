@@ -138,16 +138,19 @@
         all_excluded_databases: "{{ system_databases + exclude_databases }}"
 
     - name: Get list of all user databases (when databases list is empty)
-      ansible.builtin.shell: >
-        PGPASSWORD='{{ postgres_password }}' psql
-        {% if postgres_socket %}-h {{ postgres_socket }}{% else %}-h {{ postgres_host }} -p {{ postgres_port }}{% endif %}
-        -U {{ postgres_user }} -d postgres
-        -t -c "SELECT datname FROM pg_database WHERE datname NOT IN ('template0','template1','postgres') ORDER BY datname;"
+      ansible.builtin.shell: |
+        PGPASSWORD='{{ postgres_password }}' psql \
+        {% if postgres_socket %}-h {{ postgres_socket }}{% else %}-h {{ postgres_host }} -p {{ postgres_port }}{% endif %} \
+        -U {{ postgres_user }} -d postgres \
+        -t -A -c "SELECT datname FROM pg_database WHERE datname NOT IN ('template0','template1','postgres') ORDER BY datname;"
+      args:
+        executable: /bin/bash
       register: all_databases
       changed_when: false
       no_log: false
       when: databases | length == 0
       ignore_errors: "{{ continue_on_error }}"
+      timeout: 30
 
     - name: Set databases to export
       ansible.builtin.set_fact:
