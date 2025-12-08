@@ -9,7 +9,7 @@
   gather_facts: true
 
   vars:
-    output_directory: "{{ playbook_dir }}/output"
+    output_dir: "{{ output_dir | default('/mnt/backup.fuhlig.de/automation/OpenPorts') }}"
 
   tasks:
     - name: Check if ss command is available
@@ -118,7 +118,7 @@
 
     - name: Create output directory
       ansible.builtin.file:
-        path: "{{ output_directory }}"
+        path: "{{ output_dir }}"
         state: directory
         mode: '0755'
       delegate_to: localhost
@@ -141,7 +141,7 @@
     - name: Export ports report to JSON
       ansible.builtin.copy:
         content: "{{ ports_report | to_nice_json }}"
-        dest: "{{ output_directory }}/open-ports-{{ inventory_hostname }}.json"
+        dest: "{{ output_dir }}/open-ports-{{ inventory_hostname }}.json"
         owner: "{{ ansible_user_id }}"
         group: "{{ ansible_user_gid }}"
         mode: '0644'
@@ -166,4 +166,4 @@
           - "-------------------------------------------"
           - "{{ udp_port_details }}"
           - ""
-          - "Report saved to: {{ output_directory }}/open-ports-{{ inventory_hostname }}.json"
+          - "Report saved to: {{ output_dir }}/open-ports-{{ inventory_hostname }}.json"
