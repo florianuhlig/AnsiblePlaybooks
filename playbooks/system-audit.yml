@@ -83,15 +83,60 @@
       register: network_interfaces
       changed_when: false
 
-    - name: Get listening ports
+    - name: Get listening ports with process info
       ansible.builtin.shell: |
         set -o pipefail
-        ss -tuln | grep LISTEN
+        ss -tulnp 2>/dev/null | grep LISTEN | awk '{
+          # Extract port from local address
+          split($5, addr, ":")
+          port = addr[length(addr)]
+          # Extract process name from the last column
+          process = $7
+          gsub(/.*users:\(\("/, "", process)
+          gsub(/".*/, "", process)
+          if (process == "") process = "unknown"
+          printf "%-6s %-25s %-15s\n", $1, $5, process
+        }' || echo "No listening ports"
       args:
         executable: /bin/bash
       register: listening_ports
       changed_when: false
       failed_when: false
+      become: true
+
+    - name: Get detailed port explanations
+      ansible.builtin.shell: |
+        set -o pipefail
+        ss -tulnp 2>/dev/null | grep LISTEN | while read line; do
+          port=$(echo "$line" | awk '{split($5, a, ":"); print a[length(a)]}')
+          proto=$(echo "$line" | awk '{print $1}')
+          addr=$(echo "$line" | awk '{print $5}')
+          proc=$(echo "$line" | grep -oP 'users:\(\("\K[^"]+' || echo "unknown")
+
+          # Common port explanations
+          case $port in
+            22) desc="SSH - Secure Shell remote access" ;;
+            25) desc="SMTP - Mail transfer" ;;
+            53) desc="DNS - Domain name resolution" ;;
+            80) desc="HTTP - Web server" ;;
+            443) desc="HTTPS - Secure web server" ;;
+            3306) desc="MySQL - Database server" ;;
+            5432) desc="PostgreSQL - Database server" ;;
+            6379) desc="Redis - In-memory data store" ;;
+            8080) desc="HTTP Alt - Alternative web/proxy" ;;
+            9000) desc="PHP-FPM or various services" ;;
+            27017) desc="MongoDB - Database server" ;;
+            *) desc="Custom application port" ;;
+          esac
+
+          printf "%-6s %-22s %-20s - %s\n" "$proto" "$addr" "$proc" "$desc"
+        done || echo "No listening ports"
+      args:
+        executable: /bin/bash
+      register: listening_ports_detailed
+      changed_when: false
+      failed_when: false
+      become: true
 
     # =========================================================================
     # User Information
@@ -205,6 +250,31 @@
       failed_when: false
       when: docker_check.rc == 0
 
+    - name: Get Docker networks
+      ansible.builtin.shell: |
+        set -o pipefail
+        docker network ls --format "{{.Name}}: {{.Driver}}" 2>/dev/null || echo "No networks"
+      args:
+        executable: /bin/bash
+      register: docker_networks
+      changed_when: false
+      failed_when: false
+      when: docker_check.rc == 0
+
+    - name: Get Docker volume mounts
+      ansible.builtin.shell: |
+        set -o pipefail
+        docker ps --format '{{.Names}}' 2>/dev/null | while read container; do
+          echo "=== $container ==="
+          docker inspect "$container" --format '{{range .Mounts}}{{.Type}}: {{.Source}} -> {{.Destination}}{{"\n"}}{{end}}' 2>/dev/null
+        done || echo "No mounts"
+      args:
+        executable: /bin/bash
+      register: docker_mounts
+      changed_when: false
+      failed_when: false
+      when: docker_check.rc == 0
+
     # =========================================================================
     # Compile Audit Report
     # =========================================================================
@@ -236,6 +306,7 @@
             primary_ip: "{{ ansible_default_ipv4.address | default('N/A') }}"
             interfaces: "{{ network_interfaces.stdout_lines }}"
             listening_ports: "{{ listening_ports.stdout_lines | default([]) }}"
+            listening_ports_detailed: "{{ listening_ports_detailed.stdout_lines | default([]) }}"
           users:
             logged_in: "{{ logged_users.stdout_lines | default([]) }}"
             recent_logins: "{{ last_logins.stdout_lines | default([]) }}"
@@ -250,6 +321,8 @@
             version: "{{ docker_check.stdout | default('Not installed') }}"
             running_containers: "{{ docker_containers.stdout | default('0') }}"
             images: "{{ docker_images.stdout | default('0') }}"
+            networks: "{{ docker_networks.stdout_lines | default([]) }}"
+            mounts: "{{ docker_mounts.stdout_lines | default([]) }}"
 
     # =========================================================================
     # Output Results
@@ -303,6 +376,9 @@
           - "NETWORK"
           - "  Primary IP:   {{ ansible_default_ipv4.address | default('N/A') }}"
           - ""
+          - "LISTENING PORTS (with explanations)"
+          - "{{ listening_ports_detailed.stdout_lines | default(['  No listening ports']) | join('\n') }}"
+          - ""
           - "SECURITY"
           - "  Pending Updates:  {{ pending_updates_apt.stdout | default(pending_updates_yum.stdout) | default('N/A') }}"
           - "  Failed Services:  {{ failed_services.stdout_lines | length }}"
@@ -310,6 +386,13 @@
           - "DOCKER"
           - "  Installed:    {{ 'Yes' if docker_check.rc == 0 else 'No' }}"
           - "  Containers:   {{ docker_containers.stdout | default('N/A') }}"
+          - "  Images:       {{ docker_images.stdout | default('N/A') }}"
+          - ""
+          - "DOCKER NETWORKS"
+          - "{{ docker_networks.stdout_lines | default(['  No networks']) | join('\n') }}"
+          - ""
+          - "DOCKER MOUNTS"
+          - "{{ docker_mounts.stdout_lines | default(['  No mounts']) | join('\n') }}"
           - ""
           - "-------------------------------------------"
           - "Report saved: audit-{{ inventory_hostname }}-{{ audit_date }}.json"
