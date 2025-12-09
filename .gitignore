@@ -99,3 +99,4 @@ secrets.yml
 CLAUDE.md
 inv.ini
 .gitignore
+inventory.ini
