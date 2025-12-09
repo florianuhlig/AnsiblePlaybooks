@@ -16,20 +16,20 @@
   vars:
     # === Retention Configuration ===
     # Keep daily backups for the last N days
-    daily_retention_days: "{{ keep_daily_days | default(7) }}"
+    daily_retention_days: "{{ days | default(7) }}"
 
     # Keep weekly backups for the last N weeks
-    weekly_retention_weeks: "{{ keep_weekly_weeks | default(4) }}"
+    weekly_retention_weeks: "{{ weeks | default(4) }}"
 
     # Keep monthly backups for the last N months
-    monthly_retention_months: "{{ keep_monthly_months | default(12) }}"
+    monthly_retention_months: "{{ months | default(12) }}"
 
     # Minimum number of backups to always keep regardless of policy
     min_backups_to_keep: "{{ minimum_backups | default(1) }}"
 
     # === Dry Run Mode ===
     # Set to true to only show what would be deleted without actually deleting
-    dry_run: "{{ dry_run_mode | default(false) }}"
+    dry_run: "{{ dry_run_mode | default(true) }}"
 
     # === Backup Locations ===
     # Base backup directory
@@ -44,7 +44,7 @@
     docker_volumes_backup_dir: "{{ backup_base_dir }}/docker_volumes"
 
     # === Output Options ===
-    verbose_output: "{{ enable_verbose | default(true) }}"
+    verbose_output: "{{ enable_verbose | default(false) }}"
 
   tasks:
     # =========================================
