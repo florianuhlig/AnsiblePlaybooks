@@ -98,3 +98,4 @@ secrets.yml
 .claude/
 CLAUDE.md
 inv.ini
+.gitignore
