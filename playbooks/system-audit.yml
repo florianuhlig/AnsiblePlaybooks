@@ -1,0 +1,316 @@
+---
+# Playbook: system-audit.yml
+# Description: Performs a comprehensive system audit and exports results
+# Usage: ansible-playbook playbooks/system-audit.yml
+
+- name: System Audit
+  hosts: all
+  gather_facts: true
+
+  vars:
+    audit_date: "{{ ansible_date_time.date }}"
+    output_directory: "{{ playbook_dir }}/output"
+    output_owner: "{{ lookup('env', 'USER') | default('root') }}"
+    output_group: "{{ lookup('env', 'USER') | default('root') }}"
+
+  tasks:
+    # =========================================================================
+    # System Information
+    # =========================================================================
+    - name: Get system uptime
+      ansible.builtin.command: uptime -p
+      register: system_uptime
+      changed_when: false
+
+    - name: Get kernel version
+      ansible.builtin.command: uname -r
+      register: kernel_version
+      changed_when: false
+
+    - name: Get last boot time
+      ansible.builtin.command: who -b
+      register: last_boot
+      changed_when: false
+      failed_when: false
+
+    # =========================================================================
+    # CPU Information
+    # =========================================================================
+    - name: Get CPU load averages
+      ansible.builtin.command: cat /proc/loadavg
+      register: load_averages
+      changed_when: false
+
+    # =========================================================================
+    # Memory Information
+    # =========================================================================
+    - name: Get memory information
+      ansible.builtin.command: free -h
+      register: memory_info
+      changed_when: false
+
+    - name: Get memory usage percentage
+      ansible.builtin.shell: |
+        set -o pipefail
+        free | awk '/Mem:/ {printf "%.1f", $3/$2 * 100}'
+      args:
+        executable: /bin/bash
+      register: memory_percent
+      changed_when: false
+
+    # =========================================================================
+    # Disk Information
+    # =========================================================================
+    - name: Get disk usage
+      ansible.builtin.command: df -h
+      register: disk_usage
+      changed_when: false
+
+    - name: Get disk usage for root partition
+      ansible.builtin.shell: |
+        set -o pipefail
+        df -h / | awk 'NR==2 {print $5}' | tr -d '%'
+      args:
+        executable: /bin/bash
+      register: root_disk_percent
+      changed_when: false
+
+    # =========================================================================
+    # Network Information
+    # =========================================================================
+    - name: Get network interfaces
+      ansible.builtin.command: ip -br addr
+      register: network_interfaces
+      changed_when: false
+
+    - name: Get listening ports
+      ansible.builtin.shell: |
+        set -o pipefail
+        ss -tuln | grep LISTEN
+      args:
+        executable: /bin/bash
+      register: listening_ports
+      changed_when: false
+      failed_when: false
+
+    # =========================================================================
+    # User Information
+    # =========================================================================
+    - name: Get logged in users
+      ansible.builtin.command: who
+      register: logged_users
+      changed_when: false
+      failed_when: false
+
+    - name: Get failed login attempts (last 10)
+      ansible.builtin.shell: |
+        set -o pipefail
+        lastb -n 10 2>/dev/null || echo "No failed logins or permission denied"
+      args:
+        executable: /bin/bash
+      register: failed_logins
+      changed_when: false
+      failed_when: false
+      become: true
+
+    - name: Get last successful logins (last 10)
+      ansible.builtin.command: last -n 10
+      register: last_logins
+      changed_when: false
+      failed_when: false
+
+    # =========================================================================
+    # Service Information
+    # =========================================================================
+    - name: Get failed systemd services
+      ansible.builtin.shell: |
+        set -o pipefail
+        systemctl --failed --no-legend 2>/dev/null || echo "No failed services"
+      args:
+        executable: /bin/bash
+      register: failed_services
+      changed_when: false
+      failed_when: false
+
+    # =========================================================================
+    # Security Information
+    # =========================================================================
+    - name: Check if automatic updates are enabled (Debian/Ubuntu)
+      ansible.builtin.stat:
+        path: /etc/apt/apt.conf.d/20auto-upgrades
+      register: auto_updates_apt
+      when: ansible_os_family == "Debian"
+
+    - name: Get pending security updates count (Debian/Ubuntu)
+      ansible.builtin.shell: |
+        set -o pipefail
+        apt list --upgradable 2>/dev/null | grep -i security | wc -l || echo "0"
+      args:
+        executable: /bin/bash
+      register: security_updates_apt
+      changed_when: false
+      failed_when: false
+      when: ansible_os_family == "Debian"
+
+    - name: Get total pending updates count (Debian/Ubuntu)
+      ansible.builtin.shell: |
+        set -o pipefail
+        apt list --upgradable 2>/dev/null | grep -v "Listing" | wc -l || echo "0"
+      args:
+        executable: /bin/bash
+      register: pending_updates_apt
+      changed_when: false
+      failed_when: false
+      when: ansible_os_family == "Debian"
+
+    - name: Get pending updates count (RedHat)
+      ansible.builtin.shell: |
+        set -o pipefail
+        yum check-update --quiet 2>/dev/null | wc -l || echo "0"
+      args:
+        executable: /bin/bash
+      register: pending_updates_yum
+      changed_when: false
+      failed_when: false
+      when: ansible_os_family == "RedHat"
+
+    # =========================================================================
+    # Docker Information (if installed)
+    # =========================================================================
+    - name: Check if Docker is installed
+      ansible.builtin.command: docker --version
+      register: docker_check
+      changed_when: false
+      failed_when: false
+
+    - name: Get Docker container count
+      ansible.builtin.shell: |
+        set -o pipefail
+        docker ps -q 2>/dev/null | wc -l || echo "0"
+      args:
+        executable: /bin/bash
+      register: docker_containers
+      changed_when: false
+      failed_when: false
+      when: docker_check.rc == 0
+
+    - name: Get Docker images count
+      ansible.builtin.shell: |
+        set -o pipefail
+        docker images -q 2>/dev/null | wc -l || echo "0"
+      args:
+        executable: /bin/bash
+      register: docker_images
+      changed_when: false
+      failed_when: false
+      when: docker_check.rc == 0
+
+    # =========================================================================
+    # Compile Audit Report
+    # =========================================================================
+    - name: Compile audit report
+      ansible.builtin.set_fact:
+        audit_report:
+          audit_timestamp: "{{ audit_date }}"
+          hostname: "{{ inventory_hostname }}"
+          system:
+            os: "{{ ansible_distribution }} {{ ansible_distribution_version }}"
+            os_family: "{{ ansible_os_family }}"
+            kernel: "{{ kernel_version.stdout }}"
+            architecture: "{{ ansible_architecture }}"
+            uptime: "{{ system_uptime.stdout }}"
+            last_boot: "{{ last_boot.stdout | default('N/A') }}"
+          hardware:
+            cpu_cores: "{{ ansible_processor_vcpus }}"
+            cpu_model: "{{ ansible_processor[2] | default('Unknown') }}"
+            total_memory_mb: "{{ ansible_memtotal_mb }}"
+            load_average: "{{ load_averages.stdout.split()[:3] | join(', ') }}"
+          memory:
+            total_mb: "{{ ansible_memtotal_mb }}"
+            free_mb: "{{ ansible_memfree_mb }}"
+            usage_percent: "{{ memory_percent.stdout }}%"
+          disk:
+            root_usage_percent: "{{ root_disk_percent.stdout }}%"
+            details: "{{ disk_usage.stdout_lines }}"
+          network:
+            primary_ip: "{{ ansible_default_ipv4.address | default('N/A') }}"
+            interfaces: "{{ network_interfaces.stdout_lines }}"
+            listening_ports: "{{ listening_ports.stdout_lines | default([]) }}"
+          users:
+            logged_in: "{{ logged_users.stdout_lines | default([]) }}"
+            recent_logins: "{{ last_logins.stdout_lines | default([]) }}"
+            failed_logins: "{{ failed_logins.stdout_lines | default([]) }}"
+          services:
+            failed_services: "{{ failed_services.stdout_lines | default([]) }}"
+          security:
+            pending_updates: "{{ pending_updates_apt.stdout | default(pending_updates_yum.stdout) | default('N/A') }}"
+            security_updates: "{{ security_updates_apt.stdout | default('N/A') }}"
+          docker:
+            installed: "{{ docker_check.rc == 0 }}"
+            version: "{{ docker_check.stdout | default('Not installed') }}"
+            running_containers: "{{ docker_containers.stdout | default('0') }}"
+            images: "{{ docker_images.stdout | default('0') }}"
+
+    # =========================================================================
+    # Output Results
+    # =========================================================================
+    - name: Create output directory
+      ansible.builtin.file:
+        path: "{{ output_directory }}"
+        state: directory
+        mode: '0755'
+      delegate_to: localhost
+      run_once: true
+
+    - name: Export audit report to JSON
+      ansible.builtin.copy:
+        content: "{{ audit_report | to_nice_json }}"
+        dest: "{{ output_directory }}/audit-{{ inventory_hostname }}-{{ audit_date }}.json"
+        owner: "{{ output_owner }}"
+        group: "{{ output_group }}"
+        mode: '0644'
+      delegate_to: localhost
+
+    - name: Display audit summary
+      ansible.builtin.debug:
+        msg:
+          - "==========================================="
+          - "       SYSTEM AUDIT REPORT"
+          - "       {{ audit_date }}"
+          - "==========================================="
+          - ""
+          - "HOST: {{ inventory_hostname }}"
+          - "-------------------------------------------"
+          - ""
+          - "SYSTEM INFORMATION"
+          - "  OS:           {{ ansible_distribution }} {{ ansible_distribution_version }}"
+          - "  Kernel:       {{ kernel_version.stdout }}"
+          - "  Architecture: {{ ansible_architecture }}"
+          - "  Uptime:       {{ system_uptime.stdout }}"
+          - ""
+          - "HARDWARE"
+          - "  CPU Cores:    {{ ansible_processor_vcpus }}"
+          - "  Load Avg:     {{ load_averages.stdout.split()[:3] | join(', ') }}"
+          - ""
+          - "MEMORY"
+          - "  Total:        {{ ansible_memtotal_mb }} MB"
+          - "  Free:         {{ ansible_memfree_mb }} MB"
+          - "  Usage:        {{ memory_percent.stdout }}%"
+          - ""
+          - "DISK (Root)"
+          - "  Usage:        {{ root_disk_percent.stdout }}%"
+          - ""
+          - "NETWORK"
+          - "  Primary IP:   {{ ansible_default_ipv4.address | default('N/A') }}"
+          - ""
+          - "SECURITY"
+          - "  Pending Updates:  {{ pending_updates_apt.stdout | default(pending_updates_yum.stdout) | default('N/A') }}"
+          - "  Failed Services:  {{ failed_services.stdout_lines | length }}"
+          - ""
+          - "DOCKER"
+          - "  Installed:    {{ 'Yes' if docker_check.rc == 0 else 'No' }}"
+          - "  Containers:   {{ docker_containers.stdout | default('N/A') }}"
+          - ""
+          - "-------------------------------------------"
+          - "Report saved: audit-{{ inventory_hostname }}-{{ audit_date }}.json"
+          - "==========================================="
