@@ -183,7 +183,7 @@ ansible-playbook playbooks/export-postgres-databases.yml -e "backup_retention_da
 - Include/exclude CREATE DATABASE and DROP statements
 - Schema-only or data-only backup options
 - Retention policy with minimum backup guarantees
-- Saves to `/mnt/backup.fuhlig.de/databases/postgresql/<databaseName>/`
+- Saves to `/mnt/storage/databases/postgresql/<databaseName>/`
 - Detailed backup summary with file sizes
 - Socket or TCP connection support
 
@@ -210,11 +210,11 @@ ansible-playbook playbooks/backup-docker-volumes.yml -e "exclude_volumes=['cache
 - Uses Alpine container for portable, permission-safe backups
 - Supports excluding specific volumes
 - Skips hosts without Docker installed
-- Saves to `/mnt/backup.fuhlig.de/docker_volumes/<volume_name>/`
+- Saves to `/mnt/storage/docker_volumes/<volume_name>/`
 
 **Backup Structure:**
 ```
-/mnt/backup.fuhlig.de/docker_volumes/
+/mnt/storage/docker_volumes/
 ├── myvolume1/
 │   ├── myvolume1-2025-12-06_0451.tar.gz
 │   └── myvolume1-2025-12-07_0300.tar.gz
@@ -261,13 +261,13 @@ ansible-playbook playbooks/cleanup-old-backups.yml -e "backup_directory=/custom/
 **Semaphore Variables:**
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `keep_daily_days` | 7 | Days to keep daily backups |
-| `keep_weekly_weeks` | 4 | Weeks to keep weekly backups |
-| `keep_monthly_months` | 12 | Months to keep monthly backups |
-| `minimum_backups` | 1 | Minimum backups to always keep |
-| `dry_run_mode` | false | Preview mode (no deletions) |
-| `backup_directory` | /mnt/backup.fuhlig.de | Base backup directory |
-| `enable_verbose` | true | Show detailed output |
+| `keep_daily_days` 	| 7 		| Days to keep daily backups |
+| `keep_weekly_weeks` 	| 4 		| Weeks to keep weekly backups |
+| `keep_monthly_months` | 12 		| Months to keep monthly backups |
+| `minimum_backups` 	| 1 		| Minimum backups to always keep |
+| `dry_run_mode` 	| false 	| Preview mode (no deletions) |
+| `backup_directory` 	| /mnt/storage 	| Base backup directory |
+| `enable_verbose` 	| true 		| Show detailed output |
 
 ---
 
@@ -308,43 +308,6 @@ Safely removes contents from a specified test directory.
 ```bash
 ansible-playbook playbooks/delete-test-folder.yml -e "target_folder=/path/to/folder"
 ```
-
-## Configuration
-
-### Inventory
-
-Hosts are organized in `inventory.ini`:
-
-| Group | Description |
-|-------|-------------|
-| `webservers` | Web server hosts |
-| `backup_servers` | Backup infrastructure |
-| `production` | All production hosts |
-
-### Connection Settings
-
-- **SSH Port:** 2244
-- **Default User:** fuhlig
-- **Python Interpreter:** /usr/bin/python3
-
-## Quick Start
-
-1. Clone the repository:
-   ```bash
-   git clone git@git.fuhlig.de:fuh/Ansible.git
-   cd Ansible
-   ```
-
-2. Verify connectivity:
-   ```bash
-   ansible all -m ping
-   ```
-
-3. Run a playbook:
-   ```bash
-   ansible-playbook playbooks/update-packages.yml
-   ```
-
 ## Output
 
 Playbook reports are saved to `playbooks/output/`:
@@ -352,12 +315,12 @@ Playbook reports are saved to `playbooks/output/`:
 - `packages-<hostname>.json` - Package inventory exports
 
 Database backups are saved to:
-- **MySQL:** `/mnt/share/backup/mysql/<databaseName>/`
-- **MariaDB:** `/mnt/backup.fuhlig.de/databases/mariadb/<databaseName>/`
-- **PostgreSQL:** `/mnt/backup.fuhlig.de/databases/postgresql/<databaseName>/`
+- **MySQL:** `/mnt/storage/databases/mysql/<databaseName>/`
+- **MariaDB:** `/mnt/storage/databases/mariadb/<databaseName>/`
+- **PostgreSQL:** `/mnt/storage/databases/postgresql/<databaseName>/`
 
 Docker volume backups are saved to:
-- **Docker Volumes:** `/mnt/backup.fuhlig.de/docker_volumes/<volumeName>/`
+- **Docker Volumes:** `/mnt/storage/docker_volumes/<volumeName>/`
 
 Files are timestamped: `<name>-<timestamp>.tar.gz` or `<name>_<timestamp>.sql.gz`
 
