@@ -1,0 +1,182 @@
+---
+# Playbook: ban-failed-logins.yml
+# Description: Bans IP addresses with more than 3 failed login attempts using iptables
+#              Internal/private IP addresses are never banned
+# Usage: ansible-playbook playbooks/ban-failed-logins.yml
+
+- name: Ban IPs with Failed Login Attempts
+  hosts: all
+  become: true
+  gather_facts: true
+
+  vars:
+    # Minimum failed attempts before banning
+    failed_attempts_threshold: 3
+
+    # Internal IP ranges that should NEVER be banned (RFC 1918 + localhost)
+    internal_ip_ranges:
+      - "^127\\."           # Localhost
+      - "^10\\."            # Class A private
+      - "^172\\.(1[6-9]|2[0-9]|3[0-1])\\."  # Class B private (172.16.0.0 - 172.31.255.255)
+      - "^192\\.168\\."     # Class C private
+      - "^::1$"             # IPv6 localhost
+      - "^fe80:"            # IPv6 link-local
+      - "^fc"               # IPv6 unique local
+      - "^fd"               # IPv6 unique local
+
+    # Log file locations to check for failed logins
+    auth_log_debian: /var/log/auth.log
+    auth_log_redhat: /var/log/secure
+
+  tasks:
+    # =========================================================================
+    # Determine Auth Log Location
+    # =========================================================================
+    - name: Set auth log path based on OS family
+      ansible.builtin.set_fact:
+        auth_log: "{{ auth_log_debian if ansible_os_family == 'Debian' else auth_log_redhat }}"
+
+    - name: Check if auth log exists
+      ansible.builtin.stat:
+        path: "{{ auth_log }}"
+      register: auth_log_stat
+
+    - name: Fail if auth log does not exist
+      ansible.builtin.fail:
+        msg: "Auth log not found at {{ auth_log }}"
+      when: not auth_log_stat.stat.exists
+
+    # =========================================================================
+    # Extract Failed Login IPs
+    # =========================================================================
+    - name: Get failed login attempts from auth log
+      ansible.builtin.shell: |
+        set -o pipefail
+        grep -E "Failed password|authentication failure|Invalid user" {{ auth_log }} 2>/dev/null | \
+        grep -oE '([0-9]{1,3}\.){3}[0-9]{1,3}' | \
+        sort | uniq -c | sort -rn | \
+        awk '$1 > {{ failed_attempts_threshold }} {print $2 ":" $1}'
+      args:
+        executable: /bin/bash
+      register: failed_ips_raw
+      changed_when: false
+      failed_when: false
+
+    - name: Parse failed IPs into list
+      ansible.builtin.set_fact:
+        failed_ips_with_counts: "{{ failed_ips_raw.stdout_lines | default([]) }}"
+
+    - name: Display found IPs with failed attempts
+      ansible.builtin.debug:
+        msg: "Found {{ failed_ips_with_counts | length }} IP(s) with more than {{ failed_attempts_threshold }} failed attempts"
+
+    # =========================================================================
+    # Filter Out Internal IPs
+    # =========================================================================
+    - name: Filter out internal IP addresses
+      ansible.builtin.set_fact:
+        ips_to_ban: >-
+          {{
+            failed_ips_with_counts | map('regex_replace', ':.*', '') | list |
+            reject('match', internal_ip_ranges[0]) |
+            reject('match', internal_ip_ranges[1]) |
+            reject('match', internal_ip_ranges[2]) |
+            reject('match', internal_ip_ranges[3]) |
+            reject('match', internal_ip_ranges[4]) |
+            reject('match', internal_ip_ranges[5]) |
+            reject('match', internal_ip_ranges[6]) |
+            reject('match', internal_ip_ranges[7]) |
+            list
+          }}
+
+    - name: Display IPs to be banned (excluding internal)
+      ansible.builtin.debug:
+        msg: |
+          IPs to ban: {{ ips_to_ban | join(', ') if ips_to_ban | length > 0 else 'None' }}
+          (Internal IPs are automatically excluded from banning)
+
+    # =========================================================================
+    # Get Currently Banned IPs
+    # =========================================================================
+    - name: Get currently banned IPs in iptables
+      ansible.builtin.shell: |
+        set -o pipefail
+        iptables -L INPUT -n 2>/dev/null | grep -E "DROP.*all.*--" | awk '{print $4}' | grep -v "0.0.0.0" || true
+      args:
+        executable: /bin/bash
+      register: currently_banned
+      changed_when: false
+
+    - name: Parse currently banned IPs
+      ansible.builtin.set_fact:
+        already_banned: "{{ currently_banned.stdout_lines | default([]) }}"
+
+    # =========================================================================
+    # Ban IPs Using iptables
+    # =========================================================================
+    - name: Ban IP addresses with excessive failed logins
+      ansible.builtin.iptables:
+        chain: INPUT
+        source: "{{ item }}"
+        jump: DROP
+        comment: "Banned by Ansible - excessive failed logins"
+      loop: "{{ ips_to_ban }}"
+      when:
+        - ips_to_ban | length > 0
+        - item not in already_banned
+      register: ban_result
+
+    # =========================================================================
+    # Save iptables Rules
+    # =========================================================================
+    - name: Save iptables rules (Debian/Ubuntu)
+      ansible.builtin.shell: |
+        set -o pipefail
+        iptables-save > /etc/iptables/rules.v4
+      args:
+        executable: /bin/bash
+      when:
+        - ansible_os_family == "Debian"
+        - ban_result.changed is defined and ban_result.changed
+      changed_when: true
+
+    - name: Save iptables rules (RedHat/CentOS)
+      ansible.builtin.shell: |
+        set -o pipefail
+        service iptables save || iptables-save > /etc/sysconfig/iptables
+      args:
+        executable: /bin/bash
+      when:
+        - ansible_os_family == "RedHat"
+        - ban_result.changed is defined and ban_result.changed
+      changed_when: true
+
+    # =========================================================================
+    # Summary Report
+    # =========================================================================
+    - name: Generate summary report
+      ansible.builtin.debug:
+        msg:
+          - "==========================================="
+          - "    FAILED LOGIN IP BAN REPORT"
+          - "==========================================="
+          - ""
+          - "Host: {{ inventory_hostname }}"
+          - "Threshold: {{ failed_attempts_threshold }} failed attempts"
+          - ""
+          - "RESULTS:"
+          - "  Total IPs with excessive failures: {{ failed_ips_with_counts | length }}"
+          - "  IPs excluded (internal): {{ (failed_ips_with_counts | length) - (ips_to_ban | length) }}"
+          - "  IPs banned this run: {{ ips_to_ban | difference(already_banned) | length }}"
+          - "  IPs already banned: {{ ips_to_ban | intersect(already_banned) | length }}"
+          - ""
+          - "BANNED IPs:"
+          - "{{ ips_to_ban | join('\n  ') if ips_to_ban | length > 0 else '  None' }}"
+          - ""
+          - "PROTECTED RANGES (never banned):"
+          - "  - 127.0.0.0/8 (localhost)"
+          - "  - 10.0.0.0/8 (Class A private)"
+          - "  - 172.16.0.0/12 (Class B private)"
+          - "  - 192.168.0.0/16 (Class C private)"
+          - "  - IPv6 localhost and link-local"
+          - "==========================================="
