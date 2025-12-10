@@ -9,7 +9,7 @@
 
   vars:
     audit_date: "{{ ansible_date_time.date }}"
-    output_directory: "{{ playbook_dir }}/output"
+    output_directory: "{{ outpur_dir | default('/mnt/storage/Audit') }}"
     output_owner: "{{ lookup('env', 'USER') | default('root') }}"
     output_group: "{{ lookup('env', 'USER') | default('root') }}"
 
@@ -253,7 +253,7 @@
     - name: Get Docker networks
       ansible.builtin.shell: |
         set -o pipefail
-        docker network ls --format "{{.Name}}: {{.Driver}}" 2>/dev/null || echo "No networks"
+        docker network ls --format "{% raw %}{{.Name}}: {{.Driver}}{% endraw %}" 2>/dev/null || echo "No networks"
       args:
         executable: /bin/bash
       register: docker_networks
@@ -264,9 +264,9 @@
     - name: Get Docker volume mounts
       ansible.builtin.shell: |
         set -o pipefail
-        docker ps --format '{{.Names}}' 2>/dev/null | while read container; do
+        docker ps --format '{% raw %}{{.Names}}{% endraw %}' 2>/dev/null | while read container; do
           echo "=== $container ==="
-          docker inspect "$container" --format '{{range .Mounts}}{{.Type}}: {{.Source}} -> {{.Destination}}{{"\n"}}{{end}}' 2>/dev/null
+          docker inspect "$container" --format '{% raw %}{{range .Mounts}}{{.Type}}: {{.Source}} -> {{.Destination}}{{"\n"}}{{end}}{% endraw %}' 2>/dev/null
         done || echo "No mounts"
       args:
         executable: /bin/bash
