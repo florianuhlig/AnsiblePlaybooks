@@ -127,29 +127,29 @@
       register: ban_result
 
     # =========================================================================
-    # Save iptables Rules
+    # Save iptables Rules      NOT IN USE RIGHT NOW
     # =========================================================================
-    - name: Save iptables rules (Debian/Ubuntu)
-      ansible.builtin.shell: |
-        set -o pipefail
-        iptables-save > /etc/iptables/rules.v4
-      args:
-        executable: /bin/bash
-      when:
-        - ansible_os_family == "Debian"
-        - ban_result.changed is defined and ban_result.changed
-      changed_when: true
+    #- name: Save iptables rules (Debian/Ubuntu)
+    #  ansible.builtin.shell: |
+    #    set -o pipefail
+    #    iptables-save > /etc/iptables/rules.v4
+    #  args:
+    #    executable: /bin/bash
+    #  when:
+    #    - ansible_os_family == "Debian"
+    #    - ban_result.changed is defined and ban_result.changed
+    #  changed_when: true
 
-    - name: Save iptables rules (RedHat/CentOS)
-      ansible.builtin.shell: |
-        set -o pipefail
-        service iptables save || iptables-save > /etc/sysconfig/iptables
-      args:
-        executable: /bin/bash
-      when:
-        - ansible_os_family == "RedHat"
-        - ban_result.changed is defined and ban_result.changed
-      changed_when: true
+    #- name: Save iptables rules (RedHat/CentOS)
+    #  ansible.builtin.shell: |
+    #    set -o pipefail
+    #    service iptables save || iptables-save > /etc/sysconfig/iptables
+    #  args:
+    #    executable: /bin/bash
+    #  when:
+    #    - ansible_os_family == "RedHat"
+    #    - ban_result.changed is defined and ban_result.changed
+    #  changed_when: true
 
     # =========================================================================
     # Summary Report
