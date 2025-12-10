@@ -1,0 +1,501 @@
+---
+# Playbook: cleanup-database-backups.yml
+# Description: Cleans up old backups created by export-mariadb/mysql/postgres-databases.yml and backup-docker-volumes.yml
+# Semaphore Compatible: All options configurable via variables
+# Usage: ansible-playbook playbooks/cleanup-database-backups.yml
+#        ansible-playbook playbooks/cleanup-database-backups.yml -e "retention_days=30"
+#        ansible-playbook playbooks/cleanup-database-backups.yml -e "backup_types=['mariadb','postgresql','docker']"
+
+- name: Cleanup old database and Docker volume backups
+  hosts: "{{ target_hosts | default('all') }}"
+  gather_facts: "{{ gather_facts_enabled | default(true) }}"
+  become: "{{ become_enabled | default(true) }}"
+  become_user: "{{ become_user_name | default('root') }}"
+
+  vars:
+    # === Backup Base Directories ===
+    # Base directory for MariaDB backups
+    mariadb_backup_directory: "{{ mariadb_backup_dir | default('/mnt/backup.fuhlig.de/databases/mariadb') }}"
+
+    # Base directory for MySQL backups
+    mysql_backup_directory: "{{ mysql_backup_dir | default('/mnt/backup.fuhlig.de/databases/mysql') }}"
+
+    # Base directory for PostgreSQL backups
+    postgresql_backup_directory: "{{ postgresql_backup_dir | default('/mnt/backup.fuhlig.de/databases/postgresql') }}"
+
+    # Base directory for Docker volume backups
+    docker_backup_directory: "{{ docker_backup_dir | default('/mnt/backup.fuhlig.de/docker_volumes') }}"
+
+    # === Backup Types to Clean ===
+    # Which backup types to clean up
+    # Options: mariadb, mysql, postgresql, docker
+    database_types: "{{ cleanup_database_types | default(['mariadb', 'mysql', 'postgresql', 'docker']) }}"
+
+    # === Retention Configuration ===
+    # Number of days to keep backups (required, no default to prevent accidental deletion)
+    retention_days: "{{ backup_retention_days | default(7) }}"
+
+    # Minimum number of backups to keep per database regardless of age
+    min_backups_to_keep: "{{ minimum_backups | default(3) }}"
+
+    # === Cleanup Options ===
+    # Dry run mode - show what would be deleted without actually deleting
+    dry_run: "{{ cleanup_dry_run | default(false) }}"
+
+    # Show verbose output
+    verbose_output: "{{ enable_verbose | default(true) }}"
+
+    # Continue on errors instead of failing
+    continue_on_error: "{{ ignore_errors | default(false) }}"
+
+    # Delete empty database directories after cleanup
+    remove_empty_dirs: "{{ cleanup_empty_directories | default(true) }}"
+
+    # === File Patterns ===
+    # Backup file patterns to match for databases
+    backup_patterns:
+      - "*.sql"
+      - "*.sql.gz"
+
+    # Backup file patterns for Docker volumes
+    docker_backup_patterns:
+      - "*.tar.gz"
+
+  tasks:
+    - name: Display cleanup configuration
+      ansible.builtin.debug:
+        msg:
+          - "=== Database Backup Cleanup Configuration ==="
+          - "Host: {{ inventory_hostname }}"
+          - "Database types: {{ database_types | join(', ') }}"
+          - "Retention: {{ retention_days }} days"
+          - "Minimum backups to keep: {{ min_backups_to_keep }}"
+          - "Dry run: {{ dry_run }}"
+          - "Remove empty directories: {{ remove_empty_dirs }}"
+      when: verbose_output
+
+    # === MariaDB Cleanup ===
+    - name: Check if MariaDB backup directory exists
+      ansible.builtin.stat:
+        path: "{{ mariadb_backup_directory }}"
+      register: mariadb_backup_dir_stat
+      when: "'mariadb' in database_types"
+
+    - name: Find MariaDB database subdirectories
+      ansible.builtin.find:
+        paths: "{{ mariadb_backup_directory }}"
+        file_type: directory
+      register: mariadb_db_dirs
+      when:
+        - "'mariadb' in database_types"
+        - mariadb_backup_dir_stat.stat.exists | default(false)
+
+    - name: Find old MariaDB backups
+      ansible.builtin.find:
+        paths: "{{ item.path }}"
+        patterns: "*.sql,*.sql.gz"
+        age: "{{ retention_days }}d"
+        age_stamp: mtime
+      loop: "{{ mariadb_db_dirs.files | default([]) }}"
+      register: mariadb_old_backups
+      when:
+        - "'mariadb' in database_types"
+        - mariadb_backup_dir_stat.stat.exists | default(false)
+
+    - name: Count total MariaDB backups per database
+      ansible.builtin.find:
+        paths: "{{ item.path }}"
+        patterns: "*.sql,*.sql.gz"
+      loop: "{{ mariadb_db_dirs.files | default([]) }}"
+      register: mariadb_total_backups
+      when:
+        - "'mariadb' in database_types"
+        - mariadb_backup_dir_stat.stat.exists | default(false)
+
+    - name: Display MariaDB backups to be deleted (dry run)
+      ansible.builtin.debug:
+        msg: "Would delete: {{ item.1.path }} (age: {{ ((ansible_date_time.epoch | int) - (item.1.mtime | int)) // 86400 }} days)"
+      loop: "{{ mariadb_old_backups.results | default([]) | subelements('files', skip_missing=True) }}"
+      when:
+        - "'mariadb' in database_types"
+        - dry_run
+        - mariadb_total_backups.results | selectattr('item.path', 'equalto', item.0.item.path) | map(attribute='matched') | first > min_backups_to_keep
+      loop_control:
+        label: "{{ item.1.path | default('N/A') }}"
+
+    - name: Delete old MariaDB backups
+      ansible.builtin.file:
+        path: "{{ item.1.path }}"
+        state: absent
+      loop: "{{ mariadb_old_backups.results | default([]) | subelements('files', skip_missing=True) }}"
+      when:
+        - "'mariadb' in database_types"
+        - not dry_run
+        - mariadb_total_backups.results | selectattr('item.path', 'equalto', item.0.item.path) | map(attribute='matched') | first > min_backups_to_keep
+      loop_control:
+        label: "{{ item.1.path | default('N/A') }}"
+      register: mariadb_deleted
+      ignore_errors: "{{ continue_on_error }}"
+
+    # === MySQL Cleanup ===
+    - name: Check if MySQL backup directory exists
+      ansible.builtin.stat:
+        path: "{{ mysql_backup_directory }}"
+      register: mysql_backup_dir_stat
+      when: "'mysql' in database_types"
+
+    - name: Find MySQL database subdirectories
+      ansible.builtin.find:
+        paths: "{{ mysql_backup_directory }}"
+        file_type: directory
+      register: mysql_db_dirs
+      when:
+        - "'mysql' in database_types"
+        - mysql_backup_dir_stat.stat.exists | default(false)
+
+    - name: Find old MySQL backups
+      ansible.builtin.find:
+        paths: "{{ item.path }}"
+        patterns: "*.sql,*.sql.gz"
+        age: "{{ retention_days }}d"
+        age_stamp: mtime
+      loop: "{{ mysql_db_dirs.files | default([]) }}"
+      register: mysql_old_backups
+      when:
+        - "'mysql' in database_types"
+        - mysql_backup_dir_stat.stat.exists | default(false)
+
+    - name: Count total MySQL backups per database
+      ansible.builtin.find:
+        paths: "{{ item.path }}"
+        patterns: "*.sql,*.sql.gz"
+      loop: "{{ mysql_db_dirs.files | default([]) }}"
+      register: mysql_total_backups
+      when:
+        - "'mysql' in database_types"
+        - mysql_backup_dir_stat.stat.exists | default(false)
+
+    - name: Display MySQL backups to be deleted (dry run)
+      ansible.builtin.debug:
+        msg: "Would delete: {{ item.1.path }} (age: {{ ((ansible_date_time.epoch | int) - (item.1.mtime | int)) // 86400 }} days)"
+      loop: "{{ mysql_old_backups.results | default([]) | subelements('files', skip_missing=True) }}"
+      when:
+        - "'mysql' in database_types"
+        - dry_run
+        - mysql_total_backups.results | selectattr('item.path', 'equalto', item.0.item.path) | map(attribute='matched') | first > min_backups_to_keep
+      loop_control:
+        label: "{{ item.1.path | default('N/A') }}"
+
+    - name: Delete old MySQL backups
+      ansible.builtin.file:
+        path: "{{ item.1.path }}"
+        state: absent
+      loop: "{{ mysql_old_backups.results | default([]) | subelements('files', skip_missing=True) }}"
+      when:
+        - "'mysql' in database_types"
+        - not dry_run
+        - mysql_total_backups.results | selectattr('item.path', 'equalto', item.0.item.path) | map(attribute='matched') | first > min_backups_to_keep
+      loop_control:
+        label: "{{ item.1.path | default('N/A') }}"
+      register: mysql_deleted
+      ignore_errors: "{{ continue_on_error }}"
+
+    # === PostgreSQL Cleanup ===
+    - name: Check if PostgreSQL backup directory exists
+      ansible.builtin.stat:
+        path: "{{ postgresql_backup_directory }}"
+      register: postgresql_backup_dir_stat
+      when: "'postgresql' in database_types"
+
+    - name: Find PostgreSQL database subdirectories
+      ansible.builtin.find:
+        paths: "{{ postgresql_backup_directory }}"
+        file_type: directory
+      register: postgresql_db_dirs
+      when:
+        - "'postgresql' in database_types"
+        - postgresql_backup_dir_stat.stat.exists | default(false)
+
+    - name: Find old PostgreSQL backups
+      ansible.builtin.find:
+        paths: "{{ item.path }}"
+        patterns: "*.sql,*.sql.gz"
+        age: "{{ retention_days }}d"
+        age_stamp: mtime
+      loop: "{{ postgresql_db_dirs.files | default([]) }}"
+      register: postgresql_old_backups
+      when:
+        - "'postgresql' in database_types"
+        - postgresql_backup_dir_stat.stat.exists | default(false)
+
+    - name: Count total PostgreSQL backups per database
+      ansible.builtin.find:
+        paths: "{{ item.path }}"
+        patterns: "*.sql,*.sql.gz"
+      loop: "{{ postgresql_db_dirs.files | default([]) }}"
+      register: postgresql_total_backups
+      when:
+        - "'postgresql' in database_types"
+        - postgresql_backup_dir_stat.stat.exists | default(false)
+
+    - name: Display PostgreSQL backups to be deleted (dry run)
+      ansible.builtin.debug:
+        msg: "Would delete: {{ item.1.path }} (age: {{ ((ansible_date_time.epoch | int) - (item.1.mtime | int)) // 86400 }} days)"
+      loop: "{{ postgresql_old_backups.results | default([]) | subelements('files', skip_missing=True) }}"
+      when:
+        - "'postgresql' in database_types"
+        - dry_run
+        - postgresql_total_backups.results | selectattr('item.path', 'equalto', item.0.item.path) | map(attribute='matched') | first > min_backups_to_keep
+      loop_control:
+        label: "{{ item.1.path | default('N/A') }}"
+
+    - name: Delete old PostgreSQL backups
+      ansible.builtin.file:
+        path: "{{ item.1.path }}"
+        state: absent
+      loop: "{{ postgresql_old_backups.results | default([]) | subelements('files', skip_missing=True) }}"
+      when:
+        - "'postgresql' in database_types"
+        - not dry_run
+        - postgresql_total_backups.results | selectattr('item.path', 'equalto', item.0.item.path) | map(attribute='matched') | first > min_backups_to_keep
+      loop_control:
+        label: "{{ item.1.path | default('N/A') }}"
+      register: postgresql_deleted
+      ignore_errors: "{{ continue_on_error }}"
+
+    # === Docker Volume Backup Cleanup ===
+    - name: Check if Docker backup directory exists
+      ansible.builtin.stat:
+        path: "{{ docker_backup_directory }}"
+      register: docker_backup_dir_stat
+      when: "'docker' in database_types"
+
+    - name: Find Docker volume subdirectories
+      ansible.builtin.find:
+        paths: "{{ docker_backup_directory }}"
+        file_type: directory
+      register: docker_volume_dirs
+      when:
+        - "'docker' in database_types"
+        - docker_backup_dir_stat.stat.exists | default(false)
+
+    - name: Find old Docker volume backups
+      ansible.builtin.find:
+        paths: "{{ item.path }}"
+        patterns: "*.tar.gz"
+        age: "{{ retention_days }}d"
+        age_stamp: mtime
+      loop: "{{ docker_volume_dirs.files | default([]) }}"
+      register: docker_old_backups
+      when:
+        - "'docker' in database_types"
+        - docker_backup_dir_stat.stat.exists | default(false)
+
+    - name: Count total Docker volume backups per volume
+      ansible.builtin.find:
+        paths: "{{ item.path }}"
+        patterns: "*.tar.gz"
+      loop: "{{ docker_volume_dirs.files | default([]) }}"
+      register: docker_total_backups
+      when:
+        - "'docker' in database_types"
+        - docker_backup_dir_stat.stat.exists | default(false)
+
+    - name: Display Docker volume backups to be deleted (dry run)
+      ansible.builtin.debug:
+        msg: "Would delete: {{ item.1.path }} (age: {{ ((ansible_date_time.epoch | int) - (item.1.mtime | int)) // 86400 }} days)"
+      loop: "{{ docker_old_backups.results | default([]) | subelements('files', skip_missing=True) }}"
+      when:
+        - "'docker' in database_types"
+        - dry_run
+        - docker_total_backups.results | selectattr('item.path', 'equalto', item.0.item.path) | map(attribute='matched') | first > min_backups_to_keep
+      loop_control:
+        label: "{{ item.1.path | default('N/A') }}"
+
+    - name: Delete old Docker volume backups
+      ansible.builtin.file:
+        path: "{{ item.1.path }}"
+        state: absent
+      loop: "{{ docker_old_backups.results | default([]) | subelements('files', skip_missing=True) }}"
+      when:
+        - "'docker' in database_types"
+        - not dry_run
+        - docker_total_backups.results | selectattr('item.path', 'equalto', item.0.item.path) | map(attribute='matched') | first > min_backups_to_keep
+      loop_control:
+        label: "{{ item.1.path | default('N/A') }}"
+      register: docker_deleted
+      ignore_errors: "{{ continue_on_error }}"
+
+    # === Empty Directory Cleanup ===
+    - name: Find empty MariaDB database directories
+      ansible.builtin.find:
+        paths: "{{ mariadb_backup_directory }}"
+        file_type: directory
+        recurse: no
+      register: mariadb_dirs_check
+      when:
+        - remove_empty_dirs
+        - "'mariadb' in database_types"
+        - mariadb_backup_dir_stat.stat.exists | default(false)
+
+    - name: Check MariaDB directories for emptiness
+      ansible.builtin.find:
+        paths: "{{ item.path }}"
+        file_type: file
+      loop: "{{ mariadb_dirs_check.files | default([]) }}"
+      register: mariadb_dirs_contents
+      when:
+        - remove_empty_dirs
+        - "'mariadb' in database_types"
+
+    - name: Remove empty MariaDB database directories
+      ansible.builtin.file:
+        path: "{{ item.item.path }}"
+        state: absent
+      loop: "{{ mariadb_dirs_contents.results | default([]) }}"
+      when:
+        - remove_empty_dirs
+        - "'mariadb' in database_types"
+        - not dry_run
+        - item.matched == 0
+      loop_control:
+        label: "{{ item.item.path | default('N/A') }}"
+
+    - name: Find empty MySQL database directories
+      ansible.builtin.find:
+        paths: "{{ mysql_backup_directory }}"
+        file_type: directory
+        recurse: no
+      register: mysql_dirs_check
+      when:
+        - remove_empty_dirs
+        - "'mysql' in database_types"
+        - mysql_backup_dir_stat.stat.exists | default(false)
+
+    - name: Check MySQL directories for emptiness
+      ansible.builtin.find:
+        paths: "{{ item.path }}"
+        file_type: file
+      loop: "{{ mysql_dirs_check.files | default([]) }}"
+      register: mysql_dirs_contents
+      when:
+        - remove_empty_dirs
+        - "'mysql' in database_types"
+
+    - name: Remove empty MySQL database directories
+      ansible.builtin.file:
+        path: "{{ item.item.path }}"
+        state: absent
+      loop: "{{ mysql_dirs_contents.results | default([]) }}"
+      when:
+        - remove_empty_dirs
+        - "'mysql' in database_types"
+        - not dry_run
+        - item.matched == 0
+      loop_control:
+        label: "{{ item.item.path | default('N/A') }}"
+
+    - name: Find empty PostgreSQL database directories
+      ansible.builtin.find:
+        paths: "{{ postgresql_backup_directory }}"
+        file_type: directory
+        recurse: no
+      register: postgresql_dirs_check
+      when:
+        - remove_empty_dirs
+        - "'postgresql' in database_types"
+        - postgresql_backup_dir_stat.stat.exists | default(false)
+
+    - name: Check PostgreSQL directories for emptiness
+      ansible.builtin.find:
+        paths: "{{ item.path }}"
+        file_type: file
+      loop: "{{ postgresql_dirs_check.files | default([]) }}"
+      register: postgresql_dirs_contents
+      when:
+        - remove_empty_dirs
+        - "'postgresql' in database_types"
+
+    - name: Remove empty PostgreSQL database directories
+      ansible.builtin.file:
+        path: "{{ item.item.path }}"
+        state: absent
+      loop: "{{ postgresql_dirs_contents.results | default([]) }}"
+      when:
+        - remove_empty_dirs
+        - "'postgresql' in database_types"
+        - not dry_run
+        - item.matched == 0
+      loop_control:
+        label: "{{ item.item.path | default('N/A') }}"
+
+    - name: Find empty Docker volume directories
+      ansible.builtin.find:
+        paths: "{{ docker_backup_directory }}"
+        file_type: directory
+        recurse: no
+      register: docker_dirs_check
+      when:
+        - remove_empty_dirs
+        - "'docker' in database_types"
+        - docker_backup_dir_stat.stat.exists | default(false)
+
+    - name: Check Docker directories for emptiness
+      ansible.builtin.find:
+        paths: "{{ item.path }}"
+        file_type: file
+      loop: "{{ docker_dirs_check.files | default([]) }}"
+      register: docker_dirs_contents
+      when:
+        - remove_empty_dirs
+        - "'docker' in database_types"
+
+    - name: Remove empty Docker volume directories
+      ansible.builtin.file:
+        path: "{{ item.item.path }}"
+        state: absent
+      loop: "{{ docker_dirs_contents.results | default([]) }}"
+      when:
+        - remove_empty_dirs
+        - "'docker' in database_types"
+        - not dry_run
+        - item.matched == 0
+      loop_control:
+        label: "{{ item.item.path | default('N/A') }}"
+
+    # === Summary ===
+    - name: Calculate cleanup statistics
+      ansible.builtin.set_fact:
+        mariadb_deleted_count: "{{ mariadb_deleted.results | default([]) | selectattr('changed', 'defined') | selectattr('changed') | list | length }}"
+        mysql_deleted_count: "{{ mysql_deleted.results | default([]) | selectattr('changed', 'defined') | selectattr('changed') | list | length }}"
+        postgresql_deleted_count: "{{ postgresql_deleted.results | default([]) | selectattr('changed', 'defined') | selectattr('changed') | list | length }}"
+        docker_deleted_count: "{{ docker_deleted.results | default([]) | selectattr('changed', 'defined') | selectattr('changed') | list | length }}"
+      when: not dry_run
+
+    - name: Display cleanup summary
+      ansible.builtin.debug:
+        msg:
+          - "=== Backup Cleanup Summary ==="
+          - "Host: {{ inventory_hostname }}"
+          - "Mode: {{ 'DRY RUN' if dry_run else 'LIVE' }}"
+          - "Retention policy: {{ retention_days }} days (minimum {{ min_backups_to_keep }} backups kept)"
+          - ""
+          - "MariaDB: {{ mariadb_deleted_count | default('N/A') }} backups deleted"
+          - "MySQL: {{ mysql_deleted_count | default('N/A') }} backups deleted"
+          - "PostgreSQL: {{ postgresql_deleted_count | default('N/A') }} backups deleted"
+          - "Docker volumes: {{ docker_deleted_count | default('N/A') }} backups deleted"
+      when:
+        - verbose_output
+        - not dry_run
+
+    - name: Display dry run summary
+      ansible.builtin.debug:
+        msg:
+          - "=== Backup Cleanup Summary (DRY RUN) ==="
+          - "Host: {{ inventory_hostname }}"
+          - "No files were deleted. Run with dry_run=false to delete."
+          - ""
+          - "Retention policy: {{ retention_days }} days (minimum {{ min_backups_to_keep }} backups kept)"
+      when:
+        - verbose_output
+        - dry_run
