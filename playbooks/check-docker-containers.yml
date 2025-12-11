@@ -9,7 +9,6 @@
   gather_facts: true
 
   vars:
-    output_directory: "{{ playbook_dir }}/output"
     output_directory: "{{ output_dir | default('/mnt/storage/Audit/Docker') }}"
 
   tasks:
@@ -67,7 +66,7 @@
       ansible.builtin.file:
         path: "{{ output_directory }}"
         state: directory
-        mode: '0755'
+        mode: "0755"
       delegate_to: localhost
       run_once: true
 
@@ -101,7 +100,7 @@
         dest: "{{ output_directory }}/containers-{{ inventory_hostname }}.json"
         owner: "{{ ansible_user_id }}"
         group: "{{ ansible_user_gid }}"
-        mode: '0644'
+        mode: "0644"
       delegate_to: localhost
 
     - name: Display containers summary
