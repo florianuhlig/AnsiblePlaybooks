@@ -10,6 +10,7 @@
 
   vars:
     output_directory: "{{ playbook_dir }}/output"
+    output_directory: "{{ output_dir | default('/mnt/storage/Audit/Docker') }}"
 
   tasks:
     - name: Check if Docker is installed

@@ -1,16 +1,15 @@
 ---
-# Playbook: export-iptables.yml
-# Description: Exports all iptables rules and ipsets from remote hosts
-# Usage: ansible-playbook playbooks/export-iptables.yml
+# Playbook: export-firewall.yml
+# Description: Exports all iptables rules and ipset summaries from remote hosts
+# Usage: ansible-playbook playbooks/export-firewall.yml
 
-- name: Export Iptables Rules and IPsets
+- name: Export Iptables Rules and IPset Summary
   hosts: all
   gather_facts: true
   become: true
 
   vars:
     export_date: "{{ ansible_date_time.date }}"
-    export_timestamp: "{{ ansible_date_time.iso8601_basic_short }}"
     output_directory: "{{ output_dir | default('/mnt/storage/Audit/Iptables') }}"
     output_owner: "{{ lookup('env', 'USER') | default('root') }}"
     output_group: "{{ lookup('env', 'USER') | default('root') }}"
@@ -44,35 +43,18 @@
       ansible.builtin.shell: |
         set -o pipefail
         for table in filter nat mangle raw security; do
-          echo "# Table: $table"
-          iptables -t $table -S 2>/dev/null || echo "# Table $table not available"
-          echo ""
+          output=$(iptables -t $table -S 2>/dev/null)
+          if [ -n "$output" ] && [ "$output" != "-P INPUT ACCEPT
+        -P FORWARD ACCEPT
+        -P OUTPUT ACCEPT" ]; then
+            echo "# Table: $table"
+            echo "$output"
+            echo ""
+          fi
         done
       args:
         executable: /bin/bash
       register: iptables_rules
-      changed_when: false
-      failed_when: false
-      when: iptables_check.rc == 0
-
-    - name: Export iptables rules with counters (verbose)
-      ansible.builtin.shell: |
-        set -o pipefail
-        for table in filter nat mangle raw security; do
-          echo "# Table: $table"
-          iptables -t $table -L -n -v --line-numbers 2>/dev/null || echo "# Table $table not available"
-          echo ""
-        done
-      args:
-        executable: /bin/bash
-      register: iptables_verbose
-      changed_when: false
-      failed_when: false
-      when: iptables_check.rc == 0
-
-    - name: Export iptables-save format
-      ansible.builtin.command: iptables-save
-      register: iptables_save
       changed_when: false
       failed_when: false
       when: iptables_check.rc == 0
@@ -84,9 +66,14 @@
       ansible.builtin.shell: |
         set -o pipefail
         for table in filter nat mangle raw security; do
-          echo "# Table: $table"
-          ip6tables -t $table -S 2>/dev/null || echo "# Table $table not available"
-          echo ""
+          output=$(ip6tables -t $table -S 2>/dev/null)
+          if [ -n "$output" ] && [ "$output" != "-P INPUT ACCEPT
+        -P FORWARD ACCEPT
+        -P OUTPUT ACCEPT" ]; then
+            echo "# Table: $table"
+            echo "$output"
+            echo ""
+          fi
         done
       args:
         executable: /bin/bash
@@ -95,48 +82,19 @@
       failed_when: false
       when: ip6tables_check.rc == 0
 
-    - name: Export ip6tables rules with counters (verbose)
+    # =========================================================================
+    # Export IPset names and entry counts
+    # =========================================================================
+    - name: Get ipset names and entry counts
       ansible.builtin.shell: |
         set -o pipefail
-        for table in filter nat mangle raw security; do
-          echo "# Table: $table"
-          ip6tables -t $table -L -n -v --line-numbers 2>/dev/null || echo "# Table $table not available"
-          echo ""
+        ipset list -n 2>/dev/null | while read setname; do
+          count=$(ipset list "$setname" 2>/dev/null | grep -c "^[0-9]" || echo "0")
+          printf "%-40s %s entries\n" "$setname" "$count"
         done
       args:
         executable: /bin/bash
-      register: ip6tables_verbose
-      changed_when: false
-      failed_when: false
-      when: ip6tables_check.rc == 0
-
-    - name: Export ip6tables-save format
-      ansible.builtin.command: ip6tables-save
-      register: ip6tables_save
-      changed_when: false
-      failed_when: false
-      when: ip6tables_check.rc == 0
-
-    # =========================================================================
-    # Export IPsets
-    # =========================================================================
-    - name: List all ipsets
-      ansible.builtin.command: ipset list -n
-      register: ipset_list
-      changed_when: false
-      failed_when: false
-      when: ipset_check.rc == 0
-
-    - name: Export ipset details
-      ansible.builtin.command: ipset list
-      register: ipset_details
-      changed_when: false
-      failed_when: false
-      when: ipset_check.rc == 0
-
-    - name: Export ipset save format (restorable)
-      ansible.builtin.command: ipset save
-      register: ipset_save
+      register: ipset_summary
       changed_when: false
       failed_when: false
       when: ipset_check.rc == 0
@@ -152,158 +110,58 @@
       delegate_to: localhost
       run_once: true
 
-    - name: Create host-specific output directory
-      ansible.builtin.file:
-        path: "{{ output_directory }}/{{ inventory_hostname }}"
-        state: directory
-        mode: '0755'
-      delegate_to: localhost
-
     # =========================================================================
-    # Save iptables exports
+    # Build and save combined report
     # =========================================================================
-    - name: Save iptables rules
+    - name: Save combined firewall report
       ansible.builtin.copy:
         content: |
-          # Iptables Rules Export
-          # Host: {{ inventory_hostname }}
-          # Date: {{ export_date }}
-          # Generated by Ansible
+          ================================================================================
+          FIREWALL EXPORT REPORT
+          ================================================================================
+          Host:       {{ inventory_hostname }}
+          Date:       {{ export_date }}
+          ================================================================================
 
-          {{ iptables_rules.stdout | default('# No iptables rules available') }}
-        dest: "{{ output_directory }}/{{ inventory_hostname }}/iptables-rules-{{ export_date }}.txt"
-        owner: "{{ output_owner }}"
-        group: "{{ output_group }}"
-        mode: '0644'
-      delegate_to: localhost
-      when: iptables_check.rc == 0
+          {% if iptables_check.rc == 0 and iptables_rules.stdout | default('') | trim | length > 0 %}
+          ================================================================================
+          IPTABLES (IPv4)
+          ================================================================================
+          {{ iptables_rules.stdout }}
+          {% else %}
+          ================================================================================
+          IPTABLES (IPv4)
+          ================================================================================
+          No custom rules configured (default policies only)
 
-    - name: Save iptables verbose output
-      ansible.builtin.copy:
-        content: |
-          # Iptables Verbose Export (with counters)
-          # Host: {{ inventory_hostname }}
-          # Date: {{ export_date }}
-          # Generated by Ansible
+          {% endif %}
+          {% if ip6tables_check.rc == 0 and ip6tables_rules.stdout | default('') | trim | length > 0 %}
+          ================================================================================
+          IP6TABLES (IPv6)
+          ================================================================================
+          {{ ip6tables_rules.stdout }}
+          {% else %}
+          ================================================================================
+          IP6TABLES (IPv6)
+          ================================================================================
+          No custom rules configured (default policies only)
 
-          {{ iptables_verbose.stdout | default('# No iptables rules available') }}
-        dest: "{{ output_directory }}/{{ inventory_hostname }}/iptables-verbose-{{ export_date }}.txt"
-        owner: "{{ output_owner }}"
-        group: "{{ output_group }}"
-        mode: '0644'
-      delegate_to: localhost
-      when: iptables_check.rc == 0
+          {% endif %}
+          ================================================================================
+          IPSETS
+          ================================================================================
+          {% if ipset_check.rc == 0 and ipset_summary.stdout | default('') | trim | length > 0 %}
+          Name                                     Entries
+          --------------------------------------------------------------------------------
+          {{ ipset_summary.stdout }}
+          {% else %}
+          No ipsets configured
+          {% endif %}
 
-    - name: Save iptables-save output (restorable format)
-      ansible.builtin.copy:
-        content: "{{ iptables_save.stdout | default('# No iptables rules available') }}"
-        dest: "{{ output_directory }}/{{ inventory_hostname }}/iptables-save-{{ export_date }}.rules"
-        owner: "{{ output_owner }}"
-        group: "{{ output_group }}"
-        mode: '0644'
-      delegate_to: localhost
-      when: iptables_check.rc == 0
-
-    # =========================================================================
-    # Save ip6tables exports
-    # =========================================================================
-    - name: Save ip6tables rules
-      ansible.builtin.copy:
-        content: |
-          # Ip6tables Rules Export
-          # Host: {{ inventory_hostname }}
-          # Date: {{ export_date }}
-          # Generated by Ansible
-
-          {{ ip6tables_rules.stdout | default('# No ip6tables rules available') }}
-        dest: "{{ output_directory }}/{{ inventory_hostname }}/ip6tables-rules-{{ export_date }}.txt"
-        owner: "{{ output_owner }}"
-        group: "{{ output_group }}"
-        mode: '0644'
-      delegate_to: localhost
-      when: ip6tables_check.rc == 0
-
-    - name: Save ip6tables verbose output
-      ansible.builtin.copy:
-        content: |
-          # Ip6tables Verbose Export (with counters)
-          # Host: {{ inventory_hostname }}
-          # Date: {{ export_date }}
-          # Generated by Ansible
-
-          {{ ip6tables_verbose.stdout | default('# No ip6tables rules available') }}
-        dest: "{{ output_directory }}/{{ inventory_hostname }}/ip6tables-verbose-{{ export_date }}.txt"
-        owner: "{{ output_owner }}"
-        group: "{{ output_group }}"
-        mode: '0644'
-      delegate_to: localhost
-      when: ip6tables_check.rc == 0
-
-    - name: Save ip6tables-save output (restorable format)
-      ansible.builtin.copy:
-        content: "{{ ip6tables_save.stdout | default('# No ip6tables rules available') }}"
-        dest: "{{ output_directory }}/{{ inventory_hostname }}/ip6tables-save-{{ export_date }}.rules"
-        owner: "{{ output_owner }}"
-        group: "{{ output_group }}"
-        mode: '0644'
-      delegate_to: localhost
-      when: ip6tables_check.rc == 0
-
-    # =========================================================================
-    # Save IPset exports
-    # =========================================================================
-    - name: Save ipset list
-      ansible.builtin.copy:
-        content: |
-          # IPset List Export
-          # Host: {{ inventory_hostname }}
-          # Date: {{ export_date }}
-          # Generated by Ansible
-
-          {{ ipset_details.stdout | default('# No ipsets available') }}
-        dest: "{{ output_directory }}/{{ inventory_hostname }}/ipset-list-{{ export_date }}.txt"
-        owner: "{{ output_owner }}"
-        group: "{{ output_group }}"
-        mode: '0644'
-      delegate_to: localhost
-      when: ipset_check.rc == 0
-
-    - name: Save ipset save output (restorable format)
-      ansible.builtin.copy:
-        content: "{{ ipset_save.stdout | default('# No ipsets available') }}"
-        dest: "{{ output_directory }}/{{ inventory_hostname }}/ipset-save-{{ export_date }}.rules"
-        owner: "{{ output_owner }}"
-        group: "{{ output_group }}"
-        mode: '0644'
-      delegate_to: localhost
-      when: ipset_check.rc == 0
-
-    # =========================================================================
-    # Export combined JSON report
-    # =========================================================================
-    - name: Compile firewall export report
-      ansible.builtin.set_fact:
-        firewall_report:
-          export_timestamp: "{{ export_date }}"
-          hostname: "{{ inventory_hostname }}"
-          iptables:
-            available: "{{ iptables_check.rc == 0 }}"
-            rules: "{{ iptables_rules.stdout_lines | default([]) }}"
-            save_format: "{{ iptables_save.stdout_lines | default([]) }}"
-          ip6tables:
-            available: "{{ ip6tables_check.rc == 0 }}"
-            rules: "{{ ip6tables_rules.stdout_lines | default([]) }}"
-            save_format: "{{ ip6tables_save.stdout_lines | default([]) }}"
-          ipset:
-            available: "{{ ipset_check.rc == 0 }}"
-            sets: "{{ ipset_list.stdout_lines | default([]) }}"
-            details: "{{ ipset_details.stdout_lines | default([]) }}"
-            save_format: "{{ ipset_save.stdout_lines | default([]) }}"
-
-    - name: Export firewall report to JSON
-      ansible.builtin.copy:
-        content: "{{ firewall_report | to_nice_json }}"
-        dest: "{{ output_directory }}/{{ inventory_hostname }}/firewall-export-{{ export_date }}.json"
+          ================================================================================
+          END OF REPORT
+          ================================================================================
+        dest: "{{ output_directory }}/{{ inventory_hostname }}-firewall-{{ export_date }}.txt"
         owner: "{{ output_owner }}"
         group: "{{ output_group }}"
         mode: '0644'
@@ -315,36 +173,4 @@
     - name: Display export summary
       ansible.builtin.debug:
         msg:
-          - "==========================================="
-          - "    FIREWALL EXPORT SUMMARY"
-          - "    {{ export_date }}"
-          - "==========================================="
-          - ""
-          - "HOST: {{ inventory_hostname }}"
-          - "-------------------------------------------"
-          - ""
-          - "IPTABLES (IPv4)"
-          - "  Available:    {{ 'Yes' if iptables_check.rc == 0 else 'No' }}"
-          - "  Rules count:  {{ iptables_rules.stdout_lines | default([]) | length }}"
-          - ""
-          - "IP6TABLES (IPv6)"
-          - "  Available:    {{ 'Yes' if ip6tables_check.rc == 0 else 'No' }}"
-          - "  Rules count:  {{ ip6tables_rules.stdout_lines | default([]) | length }}"
-          - ""
-          - "IPSET"
-          - "  Available:    {{ 'Yes' if ipset_check.rc == 0 else 'No' }}"
-          - "  Sets count:   {{ ipset_list.stdout_lines | default([]) | length }}"
-          - ""
-          - "OUTPUT FILES"
-          - "  Directory:    {{ output_directory }}/{{ inventory_hostname }}/"
-          - "  - iptables-rules-{{ export_date }}.txt"
-          - "  - iptables-verbose-{{ export_date }}.txt"
-          - "  - iptables-save-{{ export_date }}.rules (restorable)"
-          - "  - ip6tables-rules-{{ export_date }}.txt"
-          - "  - ip6tables-verbose-{{ export_date }}.txt"
-          - "  - ip6tables-save-{{ export_date }}.rules (restorable)"
-          - "  - ipset-list-{{ export_date }}.txt"
-          - "  - ipset-save-{{ export_date }}.rules (restorable)"
-          - "  - firewall-export-{{ export_date }}.json"
-          - ""
-          - "==========================================="
+          - "Export complete: {{ output_directory }}/{{ inventory_hostname }}-firewall-{{ export_date }}.txt"
