@@ -9,7 +9,7 @@
 #        ansible-playbook playbooks/cleanup-old-backups.yml -e "keep_monthly_months=12"
 
 - name: Cleanup old backup files based on retention policy
-  hosts: localhost
+  hosts: all
   gather_facts: true
   connection: local
 
