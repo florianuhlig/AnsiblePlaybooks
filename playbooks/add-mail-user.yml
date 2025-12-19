@@ -1,6 +1,6 @@
 ---
 - name: Add a mail user
-  hosts: mail
+  hosts: all
   gather_facts: false
   become: true
 
