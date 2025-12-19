@@ -1,0 +1,128 @@
+---
+- name: Add a mail user
+  hosts: mail
+  gather_facts: false
+  become: true
+
+  vars:
+    random_password: "{{ lookup('community.general.random_string', length=24) }}"
+    mail_username: "{{ username | default('') }}"
+    mail_password: "{{ password | default(random_password) }}"
+    mail_protocol: "{{ protocol | default('all') }}"
+    dovecot_user_file: "{{ dovecot_users | default('/etc/dovecot/users') }}"
+    vmailbox_file: "{{ vmailbox | default('/etc/postfix/vmailbox') }}"
+    virtual_file: "{{ virtual | default('/etc/postfix/virtual') }}"
+    slm_file: "{{ slm | default('/etc/postfix/sender_login_maps') }}"
+
+
+  tasks:
+## Dovecot check
+    - name: Read dovecot users
+      ansible.builtin.slurp:
+        src: "{{ dovecot_user_file }}"
+      register: dovecot_user
+
+    - name: Check if user exists
+      ansible.builtin.set_fact:
+        user_exists: "{{ (dovecot_user.content | b64decode) is search('^' + mail_username + '@', multiline=True) }}"
+
+    - name: Fail if user already exists - Dovecot
+      ansible.builtin.fail:
+        msg: "User '{{ mail_username }}@fuhlig.de' already exists in dovecot"
+      when: user_exists
+
+## Vmailbox check
+    - name: Read vmailbox
+      ansible.builtin.slurp:
+        src: "{{ vmailbox_file }}"
+      register: vmailbox_data
+
+    - name: Check for vmailbox exist
+      ansible.builtin.set_fact:
+        user_exists: "{{ (vmailbox_data.content | b64decode) is search('^' + mail_username + '@', multiline=True) }}"
+
+    - name: Fail if user already exists - Vmailbox
+      ansible.builtin.fail:
+        msg: "User '{{ mail_username }}@fuhlig.de' already exists in vmailbox"
+      when: user_exists
+
+## Virtual check
+    - name: Read virtual
+      ansible.builtin.slurp:
+        src: "{{ virtual_file }}"
+      register: virtual_data
+
+    - name: Check for vmailbox exist
+      ansible.builtin.set_fact:
+        user_exists: "{{ (virtual_data.content | b64decode) is search('^' + mail_username + '@', multiline=True) }}"
+
+    - name: Fail if user already exists
+      ansible.builtin.fail:
+        msg: "Entry '{{ mail_username }}@fuhlig.de' already exists in {{ virtual_file }}"
+      when: user_exists
+
+## Sender Login Maps
+    - name: Read Sender Login Maps
+      ansible.builtin.slurp:
+        src: "{{ slm_file }}"
+      register: slm_data
+
+    - name: Check if SLM exists
+      ansible.builtin.set_fact:
+        user_exists: "{{ (slm_data.content | b64decode) is search('^' + mail_username + '@', multiline=True) }}"
+
+    - name: Fail if user already exists
+      ansible.builtin.fail:
+        msg: "Entry '{{ mail_username }}@fuhlig.de' already exists in {{ slm_file }}"
+      when: user_exists
+
+## Add to dovecot user
+    - name: Add a dovecot user
+      ansible.builtin.lineinfile:
+        path: "{{ dovecot_user_file }}"
+        regexp: "^{{ mail_username }}@"
+        line: "{{ mail_username }}@fuhlig.de:{PLAIN}{{ mail_password }}"
+## Add to vmailbox
+    - name: Add to vmailbox
+      ansible.builtin.lineinfile:
+        path: "{{ vmailbox_file }}"
+        regexp: "^{{ mail_username }}@"
+        line: "{{ mail_username }}@fuhlig.de    fuhlig.de/{{ mail_username }}/"
+## Add to virtual
+    - name: Add to virtual
+      ansible.builtin.lineinfile:
+        path: "{{ virtual_file }}"
+        line: "{{ mail_username }}@fuhlig.de    {{ mail_username }}@fuhlig.de"
+        insertbefore: BOF
+
+## Add Sender Login Map
+    - name: Add to SLM
+      ansible.builtin.lineinfile:
+        path: "{{ slm_file }}"
+        line: "{{ mail_username }}@fuhlig.de    {{ mail_username }}@fuhlig.de"
+
+## Reload postfix configuration
+    - name: Postmap vmailbox
+      ansible.builtin.command: postmap {{ vmailbox_file }}
+
+    - name: Postmap virtual
+      ansible.builtin.command: postmap {{ virtual_file }}
+
+    - name: Postmap sender_login_maps
+      ansible.builtin.command: postmap {{ slm_file }}
+
+    - name: Reload postfix
+      ansible.builtin.command: postfix reload
+
+    - name: Reload dovecot
+      ansible.builtin.service:
+        name: dovecot
+        state: reloaded
+
+## Print user login info
+    - name: Your login data
+      ansible.builtin.debug:
+        msg: |
+          Your Username is: {{ mail_username }}@fuhlig.de
+          Your Password is: {{ mail_password }}
+          You can login in on https://roundcube@fuhlig.de
