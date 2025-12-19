@@ -15,12 +15,14 @@
 
   tasks:
     - name: Gather iptables rules (IPv4)
-      ansible.builtin.shell: iptables-save
+#      ansible.builtin.shell: iptables-save
+      ansible.builtin.shell: iptables -L
       register: iptables_output
       changed_when: false
 
     - name: Gather ip6tables rules (IPv6)
-      ansible.builtin.shell: ip6tables-save
+#      ansible.builtin.shell: ip6tables-save
+      ansible.builtin.shell: ip6tables -L
       register: ip6tables_output
       changed_when: false
 
