@@ -112,12 +112,14 @@
       ansible.builtin.command: postmap {{ slm_file }}
 
     - name: Reload postfix
-      ansible.builtin.command: postfix reload
+      ansible.builtin.service:
+        name: postfix
+        state: restart
 
     - name: Reload dovecot
       ansible.builtin.service:
         name: dovecot
-        state: reloaded
+        state: reload
 
 ## Print user login info
     - name: Your login data
