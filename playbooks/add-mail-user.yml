@@ -16,6 +16,10 @@
 
 
   tasks:
+    - name: Freeze random password
+      ansible.builtin.set_fact:
+        mail_password: "{{ mail_password }}"
+
 ## Dovecot check
     - name: Read dovecot users
       ansible.builtin.slurp:
