@@ -1,0 +1,226 @@
+---
+# Playbook: backup-mail.yml
+# Description: Backs up all mail from Dovecot virtual mailboxes to compressed tar archives
+# Usage: ansible-playbook playbooks/backup-mail.yml
+# Optional: -e "backup_dir=/custom/path" to specify backup directory
+# Optional: -e "mail_dir=/var/vmail" to specify mail storage location
+# Optional: -e "exclude_users=['user1','user2']" to exclude specific users
+
+- name: Backup mail from mail server
+  hosts: mail
+  gather_facts: true
+
+  vars:
+    # === Backup Configuration ===
+    # Base directory for all mail backups
+    backup_base_directory: "{{ backup_dir | default('/mnt/storage/mail') }}"
+
+    # Mail storage directory (Dovecot virtual mailbox location)
+    mail_storage_directory: "{{ mail_dir | default('/var/mail/vhosts') }}"
+
+    # Mail domain
+    mail_domain: "{{ domain | default('fuhlig.de') }}"
+
+    # Users to exclude from backup
+    users_to_exclude: "{{ exclude_users | default([]) }}"
+
+    # Timestamp for backup files
+    backup_timestamp: "{{ ansible_date_time.date }}"
+
+    # === Compression Options ===
+    # Compress backups with gzip
+    compress_backups: "{{ enable_compression | default(true) }}"
+
+    # Compression level (1-9, 9 = best compression)
+    compression_level: "{{ gzip_compression_level | default(6) }}"
+
+    # === Retention Options ===
+    # Delete old backups (0 = keep all)
+    retention_days: "{{ backup_retention_days | default(0) }}"
+
+    # Keep minimum number of backups regardless of age
+    min_backups_to_keep: "{{ minimum_backups | default(3) }}"
+
+    # === File Permissions ===
+    backup_dir_mode: "{{ backup_directory_mode | default('0755') }}"
+    backup_file_mode: "{{ backup_file_permissions | default('0644') }}"
+    backup_owner: "{{ backup_file_owner | default('fuhlig') }}"
+    backup_group: "{{ backup_file_group | default('fuhlig') }}"
+
+    # Show verbose output
+    verbose_output: "{{ enable_verbose | default(true) }}"
+
+    # Continue on errors instead of failing
+    continue_on_error: "{{ ignore_errors | default(false) }}"
+
+  tasks:
+    - name: Check if mail storage directory exists
+      ansible.builtin.stat:
+        path: "{{ mail_storage_directory }}"
+      register: mail_dir_stat
+
+    - name: Skip host if mail directory does not exist
+      ansible.builtin.meta: end_host
+      when: not mail_dir_stat.stat.exists
+
+    - name: Check if domain directory exists
+      ansible.builtin.stat:
+        path: "{{ mail_storage_directory }}/{{ mail_domain }}"
+      register: domain_dir_stat
+
+    - name: Skip host if domain directory does not exist
+      ansible.builtin.meta: end_host
+      when: not domain_dir_stat.stat.exists
+
+    - name: Get list of all mail users (subdirectories)
+      ansible.builtin.find:
+        paths: "{{ mail_storage_directory }}/{{ mail_domain }}"
+        file_type: directory
+      register: mail_users
+      become: true
+
+    - name: Skip host if no mail users found
+      ansible.builtin.meta: end_host
+      when: mail_users.files | length == 0
+
+    - name: Extract user names from paths
+      ansible.builtin.set_fact:
+        all_users: "{{ mail_users.files | map(attribute='path') | map('basename') | list }}"
+
+    - name: Filter out excluded users
+      ansible.builtin.set_fact:
+        users_to_backup: "{{ all_users | difference(users_to_exclude) }}"
+
+    - name: Display users to backup
+      ansible.builtin.debug:
+        msg:
+          - "==========================================="
+          - "Mail Backup: {{ inventory_hostname }}"
+          - "==========================================="
+          - "Mail storage: {{ mail_storage_directory }}/{{ mail_domain }}"
+          - "Total users found: {{ all_users | length }}"
+          - "Users to backup: {{ users_to_backup | length }}"
+          - "Excluded users: {{ users_to_exclude | length }}"
+          - ""
+          - "Users: {{ users_to_backup | join(', ') }}"
+      when: verbose_output
+
+    - name: Create base backup directory
+      ansible.builtin.file:
+        path: "{{ backup_base_directory }}"
+        state: directory
+        mode: "{{ backup_dir_mode }}"
+        owner: "{{ backup_owner }}"
+        group: "{{ backup_group }}"
+      become: true
+
+    - name: Create backup directory for each user
+      ansible.builtin.file:
+        path: "{{ backup_base_directory }}/{{ item }}"
+        state: directory
+        mode: "{{ backup_dir_mode }}"
+        owner: "{{ backup_owner }}"
+        group: "{{ backup_group }}"
+      loop: "{{ users_to_backup }}"
+      become: true
+
+    - name: Backup each user's mail using tar
+      ansible.builtin.shell: |
+        set -e
+        tar {% if compress_backups %}-czf{% else %}-cf{% endif %} \
+          "{{ backup_base_directory }}/{{ item }}/{{ item }}_{{ backup_timestamp }}.tar{% if compress_backups %}.gz{% endif %}" \
+          -C "{{ mail_storage_directory }}/{{ mail_domain }}" \
+          "{{ item }}"
+      args:
+        executable: /bin/bash
+      loop: "{{ users_to_backup }}"
+      register: backup_results
+      become: true
+      ignore_errors: "{{ continue_on_error }}"
+
+    - name: Set file permissions on backups
+      ansible.builtin.file:
+        path: "{{ backup_base_directory }}/{{ item }}/{{ item }}_{{ backup_timestamp }}.tar{% if compress_backups %}.gz{% endif %}"
+        mode: "{{ backup_file_mode }}"
+        owner: "{{ backup_owner }}"
+        group: "{{ backup_group }}"
+      loop: "{{ users_to_backup }}"
+      become: true
+      when: backup_results is succeeded
+
+    - name: Find old backups for cleanup (when retention is enabled)
+      ansible.builtin.find:
+        paths: "{{ backup_base_directory }}/{{ item }}"
+        patterns: "{{ item }}_*.tar*"
+        age: "{{ retention_days }}d"
+        age_stamp: mtime
+      loop: "{{ users_to_backup }}"
+      register: old_backups
+      become: true
+      when: retention_days | int > 0
+
+    - name: Count total backups per user
+      ansible.builtin.find:
+        paths: "{{ backup_base_directory }}/{{ item }}"
+        patterns: "{{ item }}_*.tar*"
+      loop: "{{ users_to_backup }}"
+      register: total_backups
+      become: true
+      when: retention_days | int > 0
+
+    - name: Delete old backups (respecting minimum retention)
+      ansible.builtin.file:
+        path: "{{ item.1.path }}"
+        state: absent
+      loop: "{{ old_backups.results | default([]) | subelements('files', skip_missing=True) }}"
+      when:
+        - retention_days | int > 0
+        - total_backups.results | selectattr('item', 'equalto', item.0.item) | map(attribute='matched') | first > min_backups_to_keep
+      loop_control:
+        label: "{{ item.1.path }}"
+      become: true
+
+    - name: Get backup file sizes
+      ansible.builtin.stat:
+        path: "{{ backup_base_directory }}/{{ item }}/{{ item }}_{{ backup_timestamp }}.tar{% if compress_backups %}.gz{% endif %}"
+      loop: "{{ users_to_backup }}"
+      register: backup_stats
+      become: true
+
+    - name: Calculate total backup size
+      ansible.builtin.set_fact:
+        total_backup_size: "{{ backup_stats.results | selectattr('stat.exists', 'equalto', true) | map(attribute='stat.size') | sum }}"
+
+    - name: Display backup summary
+      ansible.builtin.debug:
+        msg:
+          - "==========================================="
+          - "Backup Complete: {{ inventory_hostname }}"
+          - "==========================================="
+          - "Backup location: {{ backup_base_directory }}/<username>/"
+          - "Users backed up: {{ users_to_backup | length }}"
+          - "Total backup size: {{ (total_backup_size | int / 1024 / 1024) | round(2) }} MB"
+          - "Compression: {{ 'enabled (.tar.gz) level ' + (compression_level | string) if compress_backups else 'disabled (.tar)' }}"
+          - "Retention: {{ retention_days | string + ' days' if retention_days | int > 0 else 'unlimited' }}"
+          - ""
+          - "Backup details:"
+      when: verbose_output
+
+    - name: Display individual user backup details
+      ansible.builtin.debug:
+        msg: "  - {{ item.item }}@{{ mail_domain }}: {{ backup_base_directory }}/{{ item.item }}/{{ item.item }}_{{ backup_timestamp }}.tar{% if compress_backups %}.gz{% endif %} ({{ (item.stat.size / 1024 / 1024) | round(2) }} MB)"
+      loop: "{{ backup_stats.results }}"
+      when:
+        - verbose_output
+        - item.stat is defined
+        - item.stat.exists | default(false)
+      loop_control:
+        label: "{{ item.item }}"
+
+    - name: Display errors if any occurred
+      ansible.builtin.debug:
+        msg: "WARNING: Some backups may have failed. Check the log for details."
+      when:
+        - backup_results is defined
+        - backup_results is failed
+        - continue_on_error
