@@ -7,7 +7,7 @@
 # Optional: -e "exclude_users=['user1','user2']" to exclude specific users
 
 - name: Backup mail from mail server
-  hosts: mail
+  hosts: all
   gather_facts: true
 
   vars:
