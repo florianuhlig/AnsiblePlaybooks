@@ -155,7 +155,7 @@
 
     - name: Set databases to export
       ansible.builtin.set_fact:
-        databases_to_export: "{{ databases if databases | length > 0 else (all_databases.stdout_lines | default([]) | map('trim') | reject('equalto', '') | list) }}"
+        databases_to_export: "{{ (databases if databases | length > 0 else (all_databases.stdout_lines | default([]) | map('trim') | reject('equalto', '') | list)) | difference(all_excluded_databases) }}"
 
     - name: Display warning if no databases found
       ansible.builtin.debug:
