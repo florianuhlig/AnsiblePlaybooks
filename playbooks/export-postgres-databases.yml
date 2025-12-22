@@ -63,6 +63,7 @@
       - postgres
       - template0
       - template1
+      - root
 
     # === Export Options ===
     # Use plain SQL format (true) or custom format (false for better compression)
