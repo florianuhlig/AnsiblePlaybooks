@@ -1,0 +1,300 @@
+---
+# Playbook: create-postgres-database-user.yml
+# Description: Creates a PostgreSQL database and user with appropriate privileges
+# Semaphore Compatible: All options configurable via variables
+# Usage: ansible-playbook playbooks/create-postgres-database-user.yml -e "db_name=myapp db_user=myapp_user"
+#        ansible-playbook playbooks/create-postgres-database-user.yml -e "db_name=myapp db_user=myapp_user db_password=secret"
+#        ansible-playbook playbooks/create-postgres-database-user.yml -e "db_name=myapp db_user=myapp_user generate_password=true"
+
+- name: Create PostgreSQL database and user
+  hosts: "{{ target_hosts | default('all') }}"
+  gather_facts: "{{ gather_facts_enabled | default(true) }}"
+  become: "{{ become_enabled | default(false) }}"
+  become_user: "{{ become_user_name | default('root') }}"
+
+  vars:
+    # === PostgreSQL Connection Parameters ===
+    # PostgreSQL host to connect to
+    postgres_host: "{{ postgres_hostname | default('localhost') }}"
+
+    # PostgreSQL port number
+    postgres_port: "{{ postgres_port_number | default(5432) }}"
+
+    # PostgreSQL admin username for authentication (needs CREATE privileges)
+    postgres_admin_user: "{{ postgres_admin_username | default('postgres') }}"
+
+    # PostgreSQL admin password (use Semaphore secrets or vault)
+    postgres_admin_password: "{{ postgres_admin_pass | default('') }}"
+
+    # PostgreSQL socket path (optional, leave empty to use TCP)
+    postgres_socket: "{{ postgres_socket_path | default('') }}"
+
+    # === Database Configuration ===
+    # Name of the database to create (REQUIRED)
+    db_name: "{{ database_name | default('') }}"
+
+    # Database encoding
+    db_encoding: "{{ database_encoding | default('UTF8') }}"
+
+    # Database locale/collation
+    db_locale: "{{ database_locale | default('en_US.UTF-8') }}"
+
+    # Database template
+    db_template: "{{ database_template | default('template0') }}"
+
+    # === User Configuration ===
+    # Name of the user to create (REQUIRED)
+    db_user: "{{ database_user | default('') }}"
+
+    # User password (leave empty to generate random password)
+    db_password: "{{ database_password | default('') }}"
+
+    # Generate random password if db_password is empty
+    generate_password: "{{ generate_random_password | default(true) }}"
+
+    # Random password length
+    password_length: "{{ random_password_length | default(32) }}"
+
+    # === User Role Options ===
+    # Allow user to create databases
+    user_createdb: "{{ allow_createdb | default(false) }}"
+
+    # Allow user to create roles
+    user_createrole: "{{ allow_createrole | default(false) }}"
+
+    # Make user a superuser (use with caution)
+    user_superuser: "{{ is_superuser | default(false) }}"
+
+    # Allow user to login
+    user_login: "{{ allow_login | default(true) }}"
+
+    # === Privilege Configuration ===
+    # Grant all privileges on database to user
+    grant_all_privileges: "{{ grant_all | default(true) }}"
+
+    # Grant privileges on schema (default: public)
+    db_schema: "{{ database_schema | default('public') }}"
+
+    # === Options ===
+    # Show verbose output
+    verbose_output: "{{ enable_verbose | default(true) }}"
+
+    # Fail if database or user already exists
+    fail_if_exists: "{{ fail_on_existing | default(false) }}"
+
+  tasks:
+    - name: Validate required parameters
+      ansible.builtin.fail:
+        msg: "Required parameter '{{ item.name }}' is not set"
+      when: item.value | length == 0
+      loop:
+        - { name: 'db_name', value: "{{ db_name }}" }
+        - { name: 'db_user', value: "{{ db_user }}" }
+
+    - name: Check if PostgreSQL client is installed
+      ansible.builtin.command: which psql
+      register: psql_check
+      changed_when: false
+      failed_when: false
+
+    - name: Fail if PostgreSQL client is not available
+      ansible.builtin.fail:
+        msg: "PostgreSQL client (psql) is not installed on {{ inventory_hostname }}"
+      when: psql_check.rc != 0
+
+    - name: Generate random password if not provided
+      ansible.builtin.set_fact:
+        db_password: "{{ lookup('password', '/dev/null length=' + (password_length | string) + ' chars=ascii_letters,digits') }}"
+      when:
+        - db_password | length == 0
+        - generate_password
+
+    - name: Fail if no password available
+      ansible.builtin.fail:
+        msg: "No password provided and generate_password is disabled"
+      when:
+        - db_password | length == 0
+        - not generate_password
+
+    - name: Check if user exists
+      ansible.builtin.shell: |
+        PGPASSWORD='{{ postgres_admin_password }}' psql \
+        {% if postgres_socket %}-h {{ postgres_socket }}{% else %}-h {{ postgres_host }} -p {{ postgres_port }}{% endif %} \
+        -U {{ postgres_admin_user }} -d postgres \
+        -t -A -c "SELECT 1 FROM pg_roles WHERE rolname = '{{ db_user }}'"
+      args:
+        executable: /bin/bash
+      register: user_exists_check
+      changed_when: false
+      no_log: true
+
+    - name: Fail if user exists and fail_if_exists is true
+      ansible.builtin.fail:
+        msg: "User '{{ db_user }}' already exists"
+      when:
+        - fail_if_exists
+        - user_exists_check.stdout | trim == '1'
+
+    - name: Create user
+      ansible.builtin.shell: |
+        PGPASSWORD='{{ postgres_admin_password }}' psql \
+        {% if postgres_socket %}-h {{ postgres_socket }}{% else %}-h {{ postgres_host }} -p {{ postgres_port }}{% endif %} \
+        -U {{ postgres_admin_user }} -d postgres \
+        -c "CREATE ROLE \"{{ db_user }}\" WITH \
+            {% if user_login %}LOGIN{% else %}NOLOGIN{% endif %} \
+            {% if user_superuser %}SUPERUSER{% else %}NOSUPERUSER{% endif %} \
+            {% if user_createdb %}CREATEDB{% else %}NOCREATEDB{% endif %} \
+            {% if user_createrole %}CREATEROLE{% else %}NOCREATEROLE{% endif %} \
+            ENCRYPTED PASSWORD '{{ db_password }}'"
+      args:
+        executable: /bin/bash
+      register: create_user_result
+      changed_when: true
+      no_log: true
+      when: user_exists_check.stdout | trim != '1'
+
+    - name: Update user password if user already existed
+      ansible.builtin.shell: |
+        PGPASSWORD='{{ postgres_admin_password }}' psql \
+        {% if postgres_socket %}-h {{ postgres_socket }}{% else %}-h {{ postgres_host }} -p {{ postgres_port }}{% endif %} \
+        -U {{ postgres_admin_user }} -d postgres \
+        -c "ALTER ROLE \"{{ db_user }}\" WITH ENCRYPTED PASSWORD '{{ db_password }}'"
+      args:
+        executable: /bin/bash
+      when: user_exists_check.stdout | trim == '1'
+      no_log: true
+
+    - name: Check if database exists
+      ansible.builtin.shell: |
+        PGPASSWORD='{{ postgres_admin_password }}' psql \
+        {% if postgres_socket %}-h {{ postgres_socket }}{% else %}-h {{ postgres_host }} -p {{ postgres_port }}{% endif %} \
+        -U {{ postgres_admin_user }} -d postgres \
+        -t -A -c "SELECT 1 FROM pg_database WHERE datname = '{{ db_name }}'"
+      args:
+        executable: /bin/bash
+      register: db_exists_check
+      changed_when: false
+      no_log: true
+
+    - name: Fail if database exists and fail_if_exists is true
+      ansible.builtin.fail:
+        msg: "Database '{{ db_name }}' already exists"
+      when:
+        - fail_if_exists
+        - db_exists_check.stdout | trim == '1'
+
+    - name: Create database
+      ansible.builtin.shell: |
+        PGPASSWORD='{{ postgres_admin_password }}' psql \
+        {% if postgres_socket %}-h {{ postgres_socket }}{% else %}-h {{ postgres_host }} -p {{ postgres_port }}{% endif %} \
+        -U {{ postgres_admin_user }} -d postgres \
+        -c "CREATE DATABASE \"{{ db_name }}\" WITH OWNER = '{{ db_user }}' ENCODING = '{{ db_encoding }}' LC_COLLATE = '{{ db_locale }}' LC_CTYPE = '{{ db_locale }}' TEMPLATE = {{ db_template }}"
+      args:
+        executable: /bin/bash
+      register: create_db_result
+      changed_when: true
+      no_log: true
+      when: db_exists_check.stdout | trim != '1'
+
+    - name: Update database owner if database already existed
+      ansible.builtin.shell: |
+        PGPASSWORD='{{ postgres_admin_password }}' psql \
+        {% if postgres_socket %}-h {{ postgres_socket }}{% else %}-h {{ postgres_host }} -p {{ postgres_port }}{% endif %} \
+        -U {{ postgres_admin_user }} -d postgres \
+        -c "ALTER DATABASE \"{{ db_name }}\" OWNER TO \"{{ db_user }}\""
+      args:
+        executable: /bin/bash
+      when: db_exists_check.stdout | trim == '1'
+      no_log: true
+
+    - name: Grant all privileges on database to user
+      ansible.builtin.shell: |
+        PGPASSWORD='{{ postgres_admin_password }}' psql \
+        {% if postgres_socket %}-h {{ postgres_socket }}{% else %}-h {{ postgres_host }} -p {{ postgres_port }}{% endif %} \
+        -U {{ postgres_admin_user }} -d postgres \
+        -c "GRANT ALL PRIVILEGES ON DATABASE \"{{ db_name }}\" TO \"{{ db_user }}\""
+      args:
+        executable: /bin/bash
+      when: grant_all_privileges
+      changed_when: true
+      no_log: true
+
+    - name: Grant usage on schema to user
+      ansible.builtin.shell: |
+        PGPASSWORD='{{ postgres_admin_password }}' psql \
+        {% if postgres_socket %}-h {{ postgres_socket }}{% else %}-h {{ postgres_host }} -p {{ postgres_port }}{% endif %} \
+        -U {{ postgres_admin_user }} -d "{{ db_name }}" \
+        -c "GRANT USAGE ON SCHEMA {{ db_schema }} TO \"{{ db_user }}\""
+      args:
+        executable: /bin/bash
+      when: grant_all_privileges
+      changed_when: true
+      no_log: true
+
+    - name: Grant all privileges on schema to user
+      ansible.builtin.shell: |
+        PGPASSWORD='{{ postgres_admin_password }}' psql \
+        {% if postgres_socket %}-h {{ postgres_socket }}{% else %}-h {{ postgres_host }} -p {{ postgres_port }}{% endif %} \
+        -U {{ postgres_admin_user }} -d "{{ db_name }}" \
+        -c "GRANT ALL PRIVILEGES ON ALL TABLES IN SCHEMA {{ db_schema }} TO \"{{ db_user }}\"; \
+            GRANT ALL PRIVILEGES ON ALL SEQUENCES IN SCHEMA {{ db_schema }} TO \"{{ db_user }}\"; \
+            GRANT ALL PRIVILEGES ON ALL FUNCTIONS IN SCHEMA {{ db_schema }} TO \"{{ db_user }}\""
+      args:
+        executable: /bin/bash
+      when: grant_all_privileges
+      changed_when: true
+      no_log: true
+
+    - name: Set default privileges for future objects
+      ansible.builtin.shell: |
+        PGPASSWORD='{{ postgres_admin_password }}' psql \
+        {% if postgres_socket %}-h {{ postgres_socket }}{% else %}-h {{ postgres_host }} -p {{ postgres_port }}{% endif %} \
+        -U {{ postgres_admin_user }} -d "{{ db_name }}" \
+        -c "ALTER DEFAULT PRIVILEGES IN SCHEMA {{ db_schema }} GRANT ALL ON TABLES TO \"{{ db_user }}\"; \
+            ALTER DEFAULT PRIVILEGES IN SCHEMA {{ db_schema }} GRANT ALL ON SEQUENCES TO \"{{ db_user }}\"; \
+            ALTER DEFAULT PRIVILEGES IN SCHEMA {{ db_schema }} GRANT ALL ON FUNCTIONS TO \"{{ db_user }}\""
+      args:
+        executable: /bin/bash
+      when: grant_all_privileges
+      changed_when: true
+      no_log: true
+
+    - name: Display creation summary
+      ansible.builtin.debug:
+        msg:
+          - "=== PostgreSQL Database and User Created ==="
+          - "Host: {{ inventory_hostname }}"
+          - "PostgreSQL Server: {{ postgres_host }}:{{ postgres_port }}"
+          - ""
+          - "Database: {{ db_name }}"
+          - "  Encoding: {{ db_encoding }}"
+          - "  Locale: {{ db_locale }}"
+          - "  Owner: {{ db_user }}"
+          - ""
+          - "User: {{ db_user }}"
+          - "Password: {{ db_password }}"
+          - "Privileges: {{ 'ALL on ' + db_name if grant_all_privileges else 'Owner only' }}"
+          - "Can Create DB: {{ 'Yes' if user_createdb else 'No' }}"
+          - "Can Create Role: {{ 'Yes' if user_createrole else 'No' }}"
+          - "Superuser: {{ 'Yes' if user_superuser else 'No' }}"
+          - ""
+          - "Connection string: psql -h {{ postgres_host }} -p {{ postgres_port }} -U {{ db_user }} -d {{ db_name }}"
+          - "Connection URL: postgresql://{{ db_user }}:{{ db_password }}@{{ postgres_host }}:{{ postgres_port }}/{{ db_name }}"
+      when: verbose_output
+
+    - name: Save credentials to file (optional)
+      ansible.builtin.copy:
+        content: |
+          # PostgreSQL Database Credentials
+          # Created: {{ ansible_date_time.iso8601 }}
+          # Host: {{ inventory_hostname }}
+
+          DATABASE_HOST={{ postgres_host }}
+          DATABASE_PORT={{ postgres_port }}
+          DATABASE_NAME={{ db_name }}
+          DATABASE_USER={{ db_user }}
+          DATABASE_PASSWORD={{ db_password }}
+          DATABASE_URL=postgresql://{{ db_user }}:{{ db_password }}@{{ postgres_host }}:{{ postgres_port }}/{{ db_name }}
+        dest: "{{ credentials_file }}"
+        mode: '0600'
+      when: credentials_file is defined

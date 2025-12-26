@@ -1,0 +1,228 @@
+---
+# Playbook: create-mysql-database-user.yml
+# Description: Creates a MySQL database and user with appropriate privileges
+# Semaphore Compatible: All options configurable via variables
+# Usage: ansible-playbook playbooks/create-mysql-database-user.yml -e "db_name=myapp db_user=myapp_user"
+#        ansible-playbook playbooks/create-mysql-database-user.yml -e "db_name=myapp db_user=myapp_user db_password=secret"
+#        ansible-playbook playbooks/create-mysql-database-user.yml -e "db_name=myapp db_user=myapp_user generate_password=true"
+
+- name: Create MySQL database and user
+  hosts: "{{ target_hosts | default('all') }}"
+  gather_facts: "{{ gather_facts_enabled | default(true) }}"
+  become: "{{ become_enabled | default(false) }}"
+  become_user: "{{ become_user_name | default('root') }}"
+
+  vars:
+    # === MySQL Connection Parameters ===
+    # MySQL host to connect to
+    mysql_host: "{{ mysql_hostname | default('localhost') }}"
+
+    # MySQL port number
+    mysql_port: "{{ mysql_port_number | default(3306) }}"
+
+    # MySQL admin username for authentication (needs CREATE privileges)
+    mysql_admin_user: "{{ mysql_admin_username | default('root') }}"
+
+    # MySQL admin password (use Semaphore secrets or vault)
+    mysql_admin_password: "{{ mysql_admin_pass | default('') }}"
+
+    # MySQL socket path (optional, leave empty to use TCP)
+    mysql_socket: "{{ mysql_socket_path | default('') }}"
+
+    # === Database Configuration ===
+    # Name of the database to create (REQUIRED)
+    db_name: "{{ database_name | default('') }}"
+
+    # Database character set
+    db_charset: "{{ database_charset | default('utf8mb4') }}"
+
+    # Database collation
+    db_collation: "{{ database_collation | default('utf8mb4_unicode_ci') }}"
+
+    # === User Configuration ===
+    # Name of the user to create (REQUIRED)
+    db_user: "{{ database_user | default('') }}"
+
+    # User password (leave empty to generate random password)
+    db_password: "{{ database_password | default('') }}"
+
+    # Generate random password if db_password is empty
+    generate_password: "{{ generate_random_password | default(true) }}"
+
+    # Random password length
+    password_length: "{{ random_password_length | default(32) }}"
+
+    # Host from which user can connect
+    db_user_host: "{{ database_user_host | default('localhost') }}"
+
+    # === Privilege Configuration ===
+    # Privileges to grant (default: ALL for the specific database)
+    db_privileges: "{{ database_privileges | default('ALL') }}"
+
+    # Grant option (allow user to grant privileges to others)
+    grant_option: "{{ allow_grant_option | default(false) }}"
+
+    # === Options ===
+    # Show verbose output
+    verbose_output: "{{ enable_verbose | default(true) }}"
+
+    # Fail if database or user already exists
+    fail_if_exists: "{{ fail_on_existing | default(false) }}"
+
+  tasks:
+    - name: Validate required parameters
+      ansible.builtin.fail:
+        msg: "Required parameter '{{ item.name }}' is not set"
+      when: item.value | length == 0
+      loop:
+        - { name: 'db_name', value: "{{ db_name }}" }
+        - { name: 'db_user', value: "{{ db_user }}" }
+
+    - name: Check if MySQL client is installed
+      ansible.builtin.command: which mysql
+      register: mysql_check
+      changed_when: false
+      failed_when: false
+
+    - name: Fail if MySQL client is not available
+      ansible.builtin.fail:
+        msg: "MySQL client is not installed on {{ inventory_hostname }}"
+      when: mysql_check.rc != 0
+
+    - name: Generate random password if not provided
+      ansible.builtin.set_fact:
+        db_password: "{{ lookup('password', '/dev/null length=' + (password_length | string) + ' chars=ascii_letters,digits') }}"
+      when:
+        - db_password | length == 0
+        - generate_password
+
+    - name: Fail if no password available
+      ansible.builtin.fail:
+        msg: "No password provided and generate_password is disabled"
+      when:
+        - db_password | length == 0
+        - not generate_password
+
+    - name: Check if database exists
+      ansible.builtin.shell: >
+        mysql
+        {% if mysql_socket %}-S {{ mysql_socket }}{% else %}-h {{ mysql_host }} -P {{ mysql_port }}{% endif %}
+        -u {{ mysql_admin_user }}
+        {% if mysql_admin_password %}-p'{{ mysql_admin_password }}'{% endif %}
+        -N -e "SELECT SCHEMA_NAME FROM INFORMATION_SCHEMA.SCHEMATA WHERE SCHEMA_NAME = '{{ db_name }}'"
+      register: db_exists_check
+      changed_when: false
+      no_log: true
+
+    - name: Fail if database exists and fail_if_exists is true
+      ansible.builtin.fail:
+        msg: "Database '{{ db_name }}' already exists"
+      when:
+        - fail_if_exists
+        - db_exists_check.stdout | length > 0
+
+    - name: Create database
+      ansible.builtin.shell: >
+        mysql
+        {% if mysql_socket %}-S {{ mysql_socket }}{% else %}-h {{ mysql_host }} -P {{ mysql_port }}{% endif %}
+        -u {{ mysql_admin_user }}
+        {% if mysql_admin_password %}-p'{{ mysql_admin_password }}'{% endif %}
+        -e "CREATE DATABASE IF NOT EXISTS \`{{ db_name }}\` CHARACTER SET {{ db_charset }} COLLATE {{ db_collation }}"
+      register: create_db_result
+      changed_when: "'already exists' not in create_db_result.stderr"
+      no_log: true
+
+    - name: Check if user exists
+      ansible.builtin.shell: >
+        mysql
+        {% if mysql_socket %}-S {{ mysql_socket }}{% else %}-h {{ mysql_host }} -P {{ mysql_port }}{% endif %}
+        -u {{ mysql_admin_user }}
+        {% if mysql_admin_password %}-p'{{ mysql_admin_password }}'{% endif %}
+        -N -e "SELECT User FROM mysql.user WHERE User = '{{ db_user }}' AND Host = '{{ db_user_host }}'"
+      register: user_exists_check
+      changed_when: false
+      no_log: true
+
+    - name: Fail if user exists and fail_if_exists is true
+      ansible.builtin.fail:
+        msg: "User '{{ db_user }}'@'{{ db_user_host }}' already exists"
+      when:
+        - fail_if_exists
+        - user_exists_check.stdout | length > 0
+
+    - name: Create user
+      ansible.builtin.shell: >
+        mysql
+        {% if mysql_socket %}-S {{ mysql_socket }}{% else %}-h {{ mysql_host }} -P {{ mysql_port }}{% endif %}
+        -u {{ mysql_admin_user }}
+        {% if mysql_admin_password %}-p'{{ mysql_admin_password }}'{% endif %}
+        -e "CREATE USER IF NOT EXISTS '{{ db_user }}'@'{{ db_user_host }}' IDENTIFIED BY '{{ db_password }}'"
+      register: create_user_result
+      changed_when: true
+      no_log: true
+
+    - name: Update user password if user already existed
+      ansible.builtin.shell: >
+        mysql
+        {% if mysql_socket %}-S {{ mysql_socket }}{% else %}-h {{ mysql_host }} -P {{ mysql_port }}{% endif %}
+        -u {{ mysql_admin_user }}
+        {% if mysql_admin_password %}-p'{{ mysql_admin_password }}'{% endif %}
+        -e "ALTER USER '{{ db_user }}'@'{{ db_user_host }}' IDENTIFIED BY '{{ db_password }}'"
+      when: user_exists_check.stdout | length > 0
+      no_log: true
+
+    - name: Grant privileges to user
+      ansible.builtin.shell: >
+        mysql
+        {% if mysql_socket %}-S {{ mysql_socket }}{% else %}-h {{ mysql_host }} -P {{ mysql_port }}{% endif %}
+        -u {{ mysql_admin_user }}
+        {% if mysql_admin_password %}-p'{{ mysql_admin_password }}'{% endif %}
+        -e "GRANT {{ db_privileges }} ON \`{{ db_name }}\`.* TO '{{ db_user }}'@'{{ db_user_host }}'{% if grant_option %} WITH GRANT OPTION{% endif %}"
+      register: grant_result
+      changed_when: true
+      no_log: true
+
+    - name: Flush privileges
+      ansible.builtin.shell: >
+        mysql
+        {% if mysql_socket %}-S {{ mysql_socket }}{% else %}-h {{ mysql_host }} -P {{ mysql_port }}{% endif %}
+        -u {{ mysql_admin_user }}
+        {% if mysql_admin_password %}-p'{{ mysql_admin_password }}'{% endif %}
+        -e "FLUSH PRIVILEGES"
+      changed_when: true
+      no_log: true
+
+    - name: Display creation summary
+      ansible.builtin.debug:
+        msg:
+          - "=== MySQL Database and User Created ==="
+          - "Host: {{ inventory_hostname }}"
+          - "MySQL Server: {{ mysql_host }}:{{ mysql_port }}"
+          - ""
+          - "Database: {{ db_name }}"
+          - "  Charset: {{ db_charset }}"
+          - "  Collation: {{ db_collation }}"
+          - ""
+          - "User: {{ db_user }}@{{ db_user_host }}"
+          - "Password: {{ db_password }}"
+          - "Privileges: {{ db_privileges }} ON {{ db_name }}.*"
+          - "Grant Option: {{ 'Yes' if grant_option else 'No' }}"
+          - ""
+          - "Connection string: mysql -h {{ mysql_host }} -P {{ mysql_port }} -u {{ db_user }} -p {{ db_name }}"
+      when: verbose_output
+
+    - name: Save credentials to file (optional)
+      ansible.builtin.copy:
+        content: |
+          # MySQL Database Credentials
+          # Created: {{ ansible_date_time.iso8601 }}
+          # Host: {{ inventory_hostname }}
+
+          DATABASE_HOST={{ mysql_host }}
+          DATABASE_PORT={{ mysql_port }}
+          DATABASE_NAME={{ db_name }}
+          DATABASE_USER={{ db_user }}
+          DATABASE_PASSWORD={{ db_password }}
+        dest: "{{ credentials_file }}"
+        mode: '0600'
+      when: credentials_file is defined
